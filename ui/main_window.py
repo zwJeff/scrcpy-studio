@@ -1,22 +1,27 @@
-"""主窗口：把设备、应用、参数三栏和 scrcpy 进程串起来。"""
+"""主窗口：设备、手机桌面应用、投屏参数、设备输入与 scrcpy 进程。"""
 from __future__ import annotations
 
 import shlex
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import QProcess, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QProcess, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor, QFont, QIcon, QKeySequence, QPainter, QPixmap, QShortcut,
+)
 from PySide6.QtWidgets import (
-    QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox, QPushButton,
-    QVBoxLayout, QWidget,
+    QApplication, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox,
+    QPushButton, QVBoxLayout, QWidget,
 )
 
-from core import adb
+from core import adb, apkinfo, textinput
 from core.aliases import display_name
 from core.config import build_args, load_state, save_state
 from core.paths import ADB, SCRCPY
 from core.tasks import run_async
 
 from .dialogs import WirelessDialog
+from .inputpanel import InputPanel
 from .panels import AppPanel, ConsolePanel, DevicePanel, SettingsPanel
 from .style import ACCENT, ACCENT_SOFT, BORDER, OK, TEXT, TEXT2, TEXT3, WARN
 
@@ -40,12 +45,15 @@ def _app_icon() -> QIcon:
 
 
 class MainWindow(QMainWindow):
+    # 后台 APK 解析线程通过信号把结果送回主线程
+    info_ready = Signal(object)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Scrcpy Studio")
         self.setWindowIcon(_app_icon())
-        self.resize(1180, 780)
-        self.setMinimumSize(1040, 700)
+        self.resize(1320, 980)
+        self.setMinimumSize(1140, 840)
 
         self.state = load_state()
         self.devices: list[adb.Device] = []
@@ -53,6 +61,19 @@ class MainWindow(QMainWindow):
         self.system_cache: dict[str, set[str]] = {}
         self.current_serial: str = ""
         self.proc: QProcess | None = None
+
+        # 应用信息提取（线程池 + 主线程批量刷新，避免每拉一个 APK 就重绘桌面）
+        self._info_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="appinfo")
+        self._info_lock = threading.Lock()
+        self._info_pending: dict[str, apkinfo.AppInfo] = {}
+        self._info_token = 0
+        self._info_done = 0
+        self._info_total = 0
+        self.info_ready.connect(self._collect_info)
+        self._info_timer = QTimer(self)
+        self._info_timer.setInterval(900)
+        self._info_timer.timeout.connect(self._flush_info)
+        self._info_timer.start()
 
         root = QWidget()
         root.setObjectName("Root")
@@ -70,8 +91,15 @@ class MainWindow(QMainWindow):
         self.app_panel = AppPanel()
         self.settings_panel = SettingsPanel()
         self.settings_panel.setFixedWidth(340)
+        self.input_panel = InputPanel()
+        self.input_panel.setFixedHeight(166)
+
+        middle = QVBoxLayout()
+        middle.setSpacing(10)
+        middle.addWidget(self.app_panel, 1)
+        middle.addWidget(self.input_panel)
         body.addWidget(self.device_panel)
-        body.addWidget(self.app_panel, 1)
+        body.addLayout(middle, 1)
         body.addWidget(self.settings_panel)
         outer.addLayout(body, 1)
 
@@ -80,6 +108,8 @@ class MainWindow(QMainWindow):
 
         self.settings_panel.set_config(self.state.mirror)
         self._wire()
+        self._init_from_state()
+        self._install_shortcuts()
 
         self.timer = QTimer(self)
         self.timer.setInterval(5000)
@@ -131,12 +161,53 @@ class MainWindow(QMainWindow):
         self.device_panel.disconnect_clicked.connect(self.disconnect_device)
 
         self.app_panel.reload_clicked.connect(lambda: self.load_apps(force=True))
+        self.app_panel.info_refresh_clicked.connect(lambda: self.load_appinfo(force=True))
         self.app_panel.launch_requested.connect(self.launch_app)
         self.app_panel.alias_requested.connect(self.edit_alias)
+        self.app_panel.dock_toggled.connect(self.toggle_dock)
+        self.app_panel.recategory_requested.connect(self.recategorize)
+        self.app_panel.category_changed.connect(lambda k: self._set_state(category=k))
+        self.app_panel.view_changed.connect(lambda v: self._set_state(view_mode=v))
+        self.app_panel.group_changed.connect(lambda g: self._set_state(group_by=g))
 
         self.settings_panel.start_clicked.connect(lambda: self.start_mirror())
         self.settings_panel.stop_clicked.connect(self.stop_mirror)
         self.settings_panel.changed.connect(self.persist)
+
+        self.input_panel.send_requested.connect(self.send_text)
+        self.input_panel.copy_requested.connect(self.copy_text)
+        self.input_panel.key_requested.connect(self.send_key)
+        self.input_panel.mode_changed.connect(lambda m: self._set_state(input_mode=m))
+        self.input_panel.enter_changed.connect(lambda e: self._set_state(input_enter=e))
+
+    def _init_from_state(self) -> None:
+        self.app_panel.set_dock(self.state.dock_packages)
+        self.app_panel.set_overrides(self.state.category_overrides)
+        self.app_panel.set_appinfo(apkinfo.all_cached())
+        self.app_panel.set_group_by(self.state.group_by)
+        self.app_panel.set_category(self.state.category)
+        self.app_panel.set_view(self.state.view_mode)
+        self.input_panel.set_mode(self.state.input_mode)
+        self.input_panel.set_enter(self.state.input_enter)
+        self.input_panel.set_history(self.state.input_history)
+        self.input_panel.set_serial("")
+
+    def _install_shortcuts(self) -> None:
+        for seq in ("Ctrl+Return", "Meta+Return"):
+            QShortcut(QKeySequence(seq), self).activated.connect(self.input_panel.send)
+        for seq in ("Ctrl+K", "Meta+K"):
+            QShortcut(QKeySequence(seq), self).activated.connect(
+                self.input_panel.focus_input
+            )
+        QShortcut(QKeySequence("Escape"), self).activated.connect(
+            lambda: self.input_panel.edit.clear()
+            if self.input_panel.edit.hasFocus() else None
+        )
+
+    def _set_state(self, **kwargs) -> None:
+        for key, value in kwargs.items():
+            setattr(self.state, key, value)
+        self.persist()
 
     # ---------- 设备 ----------
     def refresh_devices(self, silent: bool = False) -> None:
@@ -148,6 +219,7 @@ class MainWindow(QMainWindow):
             if target not in serials and online:
                 target = online[0].serial
             self.device_panel.set_devices(devices, target)
+            self.input_panel.set_serial(target if target in serials else "")
             self._update_status()
             if not silent:
                 self.console.log(f"发现 {len(devices)} 台设备")
@@ -180,6 +252,8 @@ class MainWindow(QMainWindow):
         self.current_serial = serial
         self.state.last_serial = serial
         self.persist()
+        self.input_panel.set_serial(serial)
+        self.app_panel.set_device_label(serial.split(":")[0])
         self.load_apps()
         self.load_device_info(serial)
 
@@ -190,6 +264,7 @@ class MainWindow(QMainWindow):
             parts = []
             if info.model:
                 parts.append(f"<b>{info.model}</b>")
+                self.app_panel.set_device_label(info.model)
             meta = []
             if info.android:
                 meta.append(f"Android {info.android}")
@@ -210,6 +285,7 @@ class MainWindow(QMainWindow):
         run_async(adb.disconnect, lambda out: self.console.log(out.strip()),
                   lambda m: self.console.log(f"[错误] {m}"), serial)
         self.current_serial = ""
+        self.input_panel.set_serial("")
         QTimer.singleShot(800, lambda: self.refresh_devices())
 
     def open_wireless_dialog(self) -> None:
@@ -222,7 +298,7 @@ class MainWindow(QMainWindow):
         dialog.connected.connect(lambda _addr: QTimer.singleShot(600, self.refresh_devices))
         dialog.exec()
 
-    # ---------- 应用 ----------
+    # ---------- 应用列表 ----------
     def load_apps(self, force: bool = False) -> None:
         serial = self.current_serial
         if not serial:
@@ -231,6 +307,7 @@ class MainWindow(QMainWindow):
         if not force and serial in self.app_cache:
             self.app_panel.set_data(self.app_cache[serial], self.system_cache.get(serial, set()),
                                     self.state.aliases)
+            self._info_timer.start()
             return
 
         self.app_panel.count.setText("读取中…")
@@ -242,6 +319,7 @@ class MainWindow(QMainWindow):
             self.app_panel.set_data(packages, self.system_cache.get(serial, set()),
                                     self.state.aliases)
             self.console.log(f"读取到 {len(packages)} 个可投屏应用")
+            self.load_appinfo(force=force)
 
         def fail(message: str) -> None:
             self.app_panel.count.setText("读取失败")
@@ -255,6 +333,89 @@ class MainWindow(QMainWindow):
                 self.app_panel.set_data(self.app_cache[serial], pkgs, self.state.aliases)
 
         run_async(adb.system_packages, system_done, lambda _m: None, serial)
+
+    # ---------- 应用名称 / 图标提取 ----------
+    def load_appinfo(self, force: bool = False) -> None:
+        serial = self.current_serial
+        packages = self.app_cache.get(serial) or []
+        self._info_token += 1
+        token = self._info_token
+        with self._info_lock:
+            self._info_pending.clear()
+        self._info_done = 0
+        self._info_total = len(packages)
+        if not serial or not packages:
+            self.app_panel.set_progress("")
+            return
+
+        if force:
+            apkinfo.invalidate()
+            self.app_panel.set_appinfo({})
+            self.console.log("正在重新提取应用名称与图标…")
+        else:
+            self.app_panel.set_appinfo(apkinfo.all_cached())
+        self.app_panel.set_progress(f"提取 0/{self._info_total}")
+
+        def worker(package: str):
+            if token != self._info_token:
+                return package, None
+            try:
+                return package, apkinfo.fetch(serial, package, force=force)
+            except Exception:  # noqa: BLE001 - 单个应用失败不影响其余
+                return package, None
+
+        def submitted(future) -> None:
+            try:
+                package, info = future.result()
+            except Exception:  # noqa: BLE001
+                package, info = "", None
+            self.info_ready.emit((token, package, info))
+
+        for package, _activity in packages:
+            self._info_pool.submit(worker, package).add_done_callback(submitted)
+
+    def _collect_info(self, payload) -> None:
+        token, package, info = payload
+        if token != self._info_token:
+            return
+        self._info_done += 1
+        if info is not None and package and info.usable:
+            with self._info_lock:
+                self._info_pending[package] = info
+        if self._info_done < self._info_total:
+            self.app_panel.set_progress(f"提取 {self._info_done}/{self._info_total}")
+        else:
+            self._flush_info()
+
+    def _flush_info(self) -> None:
+        with self._info_lock:
+            batch = dict(self._info_pending)
+            self._info_pending.clear()
+        if batch:
+            self.app_panel.merge_appinfo(batch)
+        if self._info_total and self._info_done >= self._info_total:
+            self.app_panel.set_progress(f"已提取 {self._info_total} 个应用")
+
+    def toggle_dock(self, package: str) -> None:
+        dock = [p for p in self.state.dock_packages if p != package]
+        if package in self.state.dock_packages:
+            self.state.dock_packages = dock
+        else:
+            self.state.dock_packages = (dock + [package])[-4:]
+        self.app_panel.set_dock(self.state.dock_packages)
+        self.app_panel.refresh()
+        self.persist()
+
+    def recategorize(self, package: str, key: str) -> None:
+        overrides = dict(self.state.category_overrides)
+        if key:
+            overrides[package] = key
+        else:
+            overrides.pop(package, None)
+        self.state.category_overrides = overrides
+        self.app_panel.set_overrides(overrides)
+        self.app_panel.refresh()
+        self.persist()
 
     def edit_alias(self, package: str) -> None:
         current = self.state.aliases.get(package, "")
@@ -273,6 +434,48 @@ class MainWindow(QMainWindow):
             self.app_panel.set_data(self.app_cache[self.current_serial],
                                     self.system_cache.get(self.current_serial, set()),
                                     self.state.aliases)
+
+    # ---------- 设备输入 ----------
+    def send_text(self, text: str, enter: bool) -> None:
+        serial = self.current_serial or self.device_panel.current_serial()
+        if not serial:
+            self.input_panel.set_status("没有可用设备", ok=False)
+            return
+        mode = self.state.input_mode
+        self.input_panel.set_status("发送中…")
+
+        def done(result: textinput.SendResult) -> None:
+            channel = "ADBKeyBoard" if result.channel == "adbkeyboard" else "input text"
+            self.input_panel.set_status(f"已发送 · {channel}")
+            self.console.log("$ " + result.detail +
+                             (" + keyevent 66" if result.enter_sent else ""))
+            history = [text] + [item for item in self.state.input_history if item != text]
+            self.state.input_history = history[:20]
+            self.input_panel.set_history(self.state.input_history)
+            self.persist()
+
+        def fail(message: str) -> None:
+            self.input_panel.set_status(message.splitlines()[0], ok=False)
+            self.console.log(f"[输入失败] {message}")
+
+        run_async(lambda: textinput.send(serial, text, mode, enter), done, fail)
+
+    def copy_text(self, text: str) -> None:
+        if not text:
+            return
+        QApplication.clipboard().setText(text)
+        self.input_panel.set_status("已复制 · 到 scrcpy 窗口按 ⌘V")
+        self.console.log(f"已复制 {len(text)} 个字符到剪贴板")
+
+    def send_key(self, name: str) -> None:
+        serial = self.current_serial or self.device_panel.current_serial()
+        if not serial:
+            self.input_panel.set_status("没有可用设备", ok=False)
+            return
+        run_async(textinput.send_keyevent,
+                  lambda out: self.console.log(f"keyevent {name} → {out.strip()}"),
+                  lambda m: self.input_panel.set_status(m, ok=False),
+                  serial, name)
 
     # ---------- 投屏 ----------
     def launch_app(self, package: str) -> None:
@@ -342,7 +545,10 @@ class MainWindow(QMainWindow):
         save_state(self.state)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._info_token += 1
+        self._info_timer.stop()
         self.persist()
         if self.proc is not None:
             self.proc.terminate()
+        self._info_pool.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)

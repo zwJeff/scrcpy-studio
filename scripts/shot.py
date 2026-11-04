@@ -25,7 +25,7 @@ def main() -> int:
     app.setStyleSheet(QSS)
 
     window = MainWindow()
-    window.resize(1180, 780)
+    window.resize(1320, 980)
     window.show()
 
     target = ROOT / "screenshot.png"

@@ -122,6 +122,16 @@ class AppState:
     adb_path: str = ""
     scrcpy_path: str = ""
 
+    view_mode: str = "desktop"            # desktop | list
+    category: str = "all"
+    group_by: bool = True
+    dock_packages: list[str] = field(default_factory=list)
+    category_overrides: dict[str, str] = field(default_factory=dict)
+
+    input_mode: str = "auto"              # auto | ascii | adbkeyboard
+    input_enter: bool = False
+    input_history: list[str] = field(default_factory=list)
+
 
 def load_state() -> AppState:
     state = AppState()
@@ -142,6 +152,14 @@ def load_state() -> AppState:
     state.auto_connect = raw.get("auto_connect", True)
     state.adb_path = raw.get("adb_path", "")
     state.scrcpy_path = raw.get("scrcpy_path", "")
+    state.view_mode = raw.get("view_mode", "desktop")
+    state.category = raw.get("category", "all")
+    state.group_by = bool(raw.get("group_by", True))
+    state.dock_packages = list(raw.get("dock_packages") or [])[:4]
+    state.category_overrides = dict(raw.get("category_overrides") or {})
+    state.input_mode = raw.get("input_mode", "auto")
+    state.input_enter = bool(raw.get("input_enter", False))
+    state.input_history = list(raw.get("input_history") or [])[:20]
     return state
 
 
@@ -156,6 +174,14 @@ def save_state(state: AppState) -> None:
         "auto_connect": state.auto_connect,
         "adb_path": state.adb_path,
         "scrcpy_path": state.scrcpy_path,
+        "view_mode": state.view_mode,
+        "category": state.category,
+        "group_by": state.group_by,
+        "dock_packages": state.dock_packages,
+        "category_overrides": state.category_overrides,
+        "input_mode": state.input_mode,
+        "input_enter": state.input_enter,
+        "input_history": state.input_history,
     }
     tmp = CONFIG_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")

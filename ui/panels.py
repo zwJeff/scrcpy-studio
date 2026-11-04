@@ -2,17 +2,21 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSlider,
+    QAbstractItemView, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton,
+    QScrollArea, QSlider,
     QSpinBox, QStackedWidget, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget,
 )
 
 from core.aliases import display_name
+from core.apkinfo import AppInfo
+from core.categories import CATEGORIES, CATEGORY_ORDER, categorize, label_of
 from core.config import MirrorConfig
 from core.paths import HOME
 
+from .desktop import AppData, PhoneDesktop, clear_pixmap_cache, icon_for
 from .style import ACCENT, ACCENT_DARK, ACCENT_SOFT, BORDER, CARD_ALT, TEXT, TEXT2, TEXT3
 
 AVATAR_COLORS = ["#7EA6F0", "#8FCBA8", "#E8B173", "#C9A0DC", "#7FC6C6", "#E39BA0", "#A9B5C8"]
@@ -79,16 +83,26 @@ class AppDelegate(QStyledItemDelegate):
         pkg = index.data(Qt.UserRole)
         name = index.data(Qt.DisplayRole)
 
-        color = AVATAR_COLORS[abs(hash(pkg)) % len(AVATAR_COLORS)]
         circle = QRect(rect.left() + 8, rect.center().y() - 11, 22, 22)
-        painter.setBrush(QColor(color))
-        painter.drawEllipse(circle)
-        initial_font = QFont(painter.font())
-        initial_font.setPixelSize(11)
-        initial_font.setBold(True)
-        painter.setFont(initial_font)
-        painter.setPen(QPen(QColor("#FFFFFF")))
-        painter.drawText(circle, Qt.AlignCenter, (name or pkg)[:1].upper())
+        decoration = index.data(Qt.DecorationRole)
+        pix = None
+        if isinstance(decoration, QIcon):
+            pix = decoration.pixmap(22, 22)
+        elif isinstance(decoration, QPixmap):
+            pix = decoration.scaled(22, 22, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        if pix is not None and not pix.isNull():
+            painter.drawPixmap(circle.left(), circle.top(), pix)
+        else:
+            color = AVATAR_COLORS[abs(hash(pkg)) % len(AVATAR_COLORS)]
+            painter.setBrush(QColor(color))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(circle)
+            initial_font = QFont(painter.font())
+            initial_font.setPixelSize(11)
+            initial_font.setBold(True)
+            painter.setFont(initial_font)
+            painter.setPen(QPen(QColor("#FFFFFF")))
+            painter.drawText(circle, Qt.AlignCenter, (name or pkg)[:1].upper())
 
         name_font = QFont(painter.font())
         name_font.setPixelSize(13)
@@ -261,19 +275,49 @@ class DevicePanel(Card):
 
 class AppPanel(Card):
     reload_clicked = Signal()
+    info_refresh_clicked = Signal()
     launch_requested = Signal(str)
     alias_requested = Signal(str)
+    dock_toggled = Signal(str)
+    recategory_requested = Signal(str, str)
+    category_changed = Signal(str)
+    view_changed = Signal(str)
+    group_changed = Signal(bool)
 
     def __init__(self):
         super().__init__("应用")
         self._packages: list[tuple[str, str]] = []
         self._system: set[str] = set()
-        self._filter = "all"
         self.aliases: dict[str, str] = {}
+        self._appinfo: dict[str, AppInfo] = {}
+        self._overrides: dict[str, str] = {}
+        self._dock: list[str] = []
+        self._filter = "all"
+        self._category = "all"
+        self._view = "desktop"
+        self._group_by = True
+        self._all: list[AppData] = []
 
         self.count = QLabel("—")
         self.count.setStyleSheet(f"font-size:11px; color:{TEXT3};")
         self.head_extra.addWidget(self.count)
+
+        self.progress = QLabel("")
+        self.progress.setObjectName("Hint")
+        self.head_extra.addWidget(self.progress)
+
+        self.view_combo = QComboBox()
+        self.view_combo.addItem("手机桌面", "desktop")
+        self.view_combo.addItem("紧凑列表", "list")
+        self.view_combo.setFixedWidth(104)
+        self.view_combo.currentIndexChanged.connect(self._on_view_combo)
+        self.head_extra.addWidget(self.view_combo)
+
+        btn_info = QPushButton("重载图标")
+        btn_info.setFixedHeight(24)
+        btn_info.setToolTip("重新从设备提取应用名称与图标")
+        btn_info.clicked.connect(self.info_refresh_clicked)
+        self.head_extra.addWidget(btn_info)
 
         reload_btn = QPushButton("重新读取")
         reload_btn.setFixedHeight(24)
@@ -286,10 +330,27 @@ class AppPanel(Card):
         self.search.textChanged.connect(self._apply_filter)
         self.body.addWidget(self.search)
 
+        # 分类筛选：8 列 × 2 行，全部可见，无需横向滚动
+        cat_grid = QGridLayout()
+        cat_grid.setContentsMargins(0, 0, 0, 0)
+        cat_grid.setSpacing(5)
+        self._cat_buttons: dict[str, QPushButton] = {}
+        for index, key in enumerate(["all"] + CATEGORY_ORDER):
+            btn = QPushButton("全部" if key == "all" else label_of(key))
+            btn.setCheckable(True)
+            btn.setFixedHeight(24)
+            btn.setChecked(key == "all")
+            btn.clicked.connect(lambda _=False, k=key: self._set_category(k))
+            self._cat_buttons[key] = btn
+            cat_grid.addWidget(btn, index // 8, index % 8)
+        for column in range(8):
+            cat_grid.setColumnStretch(column, 1)
+        self.body.addLayout(cat_grid)
+
         chips = QHBoxLayout()
         chips.setSpacing(6)
         self._chip_buttons: dict[str, QPushButton] = {}
-        for key, label in (("all", "全部"), ("third", "第三方"), ("system", "系统")):
+        for key, label in (("all", "全部来源"), ("third", "第三方"), ("system", "系统")):
             btn = QPushButton(label)
             btn.setCheckable(True)
             btn.setFixedHeight(24)
@@ -297,9 +358,25 @@ class AppPanel(Card):
             btn.clicked.connect(lambda _=False, k=key: self._set_filter(k))
             self._chip_buttons[key] = btn
             chips.addWidget(btn)
+        self.group_box = QCheckBox("按类型分区")
+        self.group_box.setChecked(True)
+        self.group_box.stateChanged.connect(
+            lambda: self._set_group(self.group_box.isChecked())
+        )
+        chips.addWidget(self.group_box)
         chips.addStretch(1)
         self.body.addLayout(chips)
 
+        self.desktop = PhoneDesktop()
+        self.desktop.setFixedWidth(340)
+        self.desktop.setMinimumHeight(300)
+        desktop_host = QWidget()
+        host_lay = QHBoxLayout(desktop_host)
+        host_lay.setContentsMargins(0, 0, 0, 0)
+        host_lay.addStretch(1)
+        host_lay.addWidget(self.desktop, 0)   # 垂直填满，底部圆角不会被裁
+        host_lay.addStretch(1)
+        self.desktop_host = desktop_host
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list.setMouseTracking(True)
@@ -313,30 +390,84 @@ class AppPanel(Card):
         self.empty = QLabel("连接设备后，这里会列出所有\n带桌面入口、可以投屏的应用")
         self.empty.setAlignment(Qt.AlignCenter)
         self.empty.setStyleSheet(f"font-size:12px; color:{TEXT3};")
+
         self.stack = QStackedWidget()
+        self.stack.addWidget(desktop_host)
         self.stack.addWidget(self.list)
         self.stack.addWidget(self.empty)
         self.stack.setCurrentWidget(self.empty)
         self.body.addWidget(self.stack, 1)
 
-        hint = QLabel("双击应用 → 在独立虚拟显示中单独投屏；单带全屏请用右侧「整屏投屏」")
+        hint = QLabel("双击图标 → 在独立虚拟显示中单独投屏；右键可复制包名、改名、固定到 Dock")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         self.body.addWidget(hint)
+
+        self.desktop.launch_requested.connect(lambda p: self.launch_requested.emit(p))
+        self.desktop.alias_requested.connect(lambda p: self.alias_requested.emit(p))
+        self.desktop.dock_toggled.connect(lambda p: self.dock_toggled.emit(p))
+        self.desktop.recategory_requested.connect(
+            lambda p, k: self.recategory_requested.emit(p, k)
+        )
         self._update_chip_style()
 
+    # ---------- 状态设置 ----------
+    def set_dock(self, packages: list[str]) -> None:
+        self._dock = list(packages)
+
+    def set_overrides(self, overrides: dict[str, str]) -> None:
+        self._overrides = dict(overrides)
+
+    def set_appinfo(self, mapping: dict[str, AppInfo]) -> None:
+        self._appinfo = dict(mapping)
+        self._apply_filter()
+
+    def merge_appinfo(self, mapping: dict[str, AppInfo]) -> None:
+        self._appinfo.update(mapping)
+        clear_pixmap_cache()
+        self._apply_filter()
+
+    def refresh(self) -> None:
+        self._apply_filter()
+
+    def set_progress(self, text: str) -> None:
+        self.progress.setText(text)
+
+    def set_device_label(self, text: str) -> None:
+        self.desktop.set_device(text)
+
+    def set_category(self, key: str) -> None:
+        self._set_category(key)
+
+    def set_view(self, key: str) -> None:
+        self._view = key
+        index = self.view_combo.findData(key)
+        if index >= 0:
+            self.view_combo.blockSignals(True)
+            self.view_combo.setCurrentIndex(index)
+            self.view_combo.blockSignals(False)
+        self._apply_filter()
+
+    def set_group_by(self, value: bool) -> None:
+        self._group_by = value
+        self.group_box.blockSignals(True)
+        self.group_box.setChecked(value)
+        self.group_box.blockSignals(False)
+
+    # ---------- 筛选 ----------
     def _update_chip_style(self) -> None:
-        for key, btn in self._chip_buttons.items():
-            if btn.isChecked():
-                btn.setStyleSheet(
-                    f"QPushButton{{background:{ACCENT}; border:1px solid {ACCENT};"
-                    f"color:#FFFFFF; border-radius:6px; padding:2px 10px; font-size:11px;}}"
-                )
-            else:
-                btn.setStyleSheet(
-                    f"QPushButton{{background:transparent; border:1px solid {BORDER};"
-                    f"color:{TEXT2}; border-radius:6px; padding:2px 10px; font-size:11px;}}"
-                )
+        for buttons in (self._cat_buttons, self._chip_buttons):
+            for btn in buttons.values():
+                if btn.isChecked():
+                    btn.setStyleSheet(
+                        f"QPushButton{{background:{ACCENT}; border:1px solid {ACCENT};"
+                        f"color:#FFFFFF; border-radius:6px; padding:2px 10px; font-size:11px;}}"
+                    )
+                else:
+                    btn.setStyleSheet(
+                        f"QPushButton{{background:transparent; border:1px solid {BORDER};"
+                        f"color:{TEXT2}; border-radius:6px; padding:2px 10px; font-size:11px;}}"
+                    )
 
     def _set_filter(self, key: str) -> None:
         self._filter = key
@@ -345,44 +476,88 @@ class AppPanel(Card):
         self._update_chip_style()
         self._apply_filter()
 
-    def set_data(self, packages: list[tuple[str, str]], system: set[str], aliases: dict[str, str]) -> None:
+    def _set_category(self, key: str) -> None:
+        self._category = key
+        for k, btn in self._cat_buttons.items():
+            btn.setChecked(k == key)
+        self._update_chip_style()
+        self.category_changed.emit(key)
+        self._apply_filter()
+
+    def _on_view_combo(self) -> None:
+        self._view = self.view_combo.currentData()
+        self.view_changed.emit(self._view)
+        self._apply_filter()
+
+    def _set_group(self, value: bool) -> None:
+        self._group_by = value
+        self.group_changed.emit(value)
+        self._apply_filter()
+
+    def set_data(self, packages: list[tuple[str, str]], system: set[str],
+                 aliases: dict[str, str]) -> None:
         self._packages = packages
         self._system = system
         self.aliases = aliases
         self.delegate.system = system
         self.delegate.aliases = aliases
-        self.count.setText(f"{len(packages)} 个可投屏应用")
         self._apply_filter()
 
+    def _build_all(self) -> None:
+        self._all = []
+        for pkg, activity in self._packages:
+            info = self._appinfo.get(pkg)
+            if pkg in self.aliases:
+                name = self.aliases[pkg]
+            elif info and info.label:
+                name = info.label
+            else:
+                name = display_name(pkg, {})
+            self._all.append(AppData(
+                package=pkg, name=name,
+                icon=info.icon if info else "",
+                category=categorize(pkg, pkg in self._system, self._overrides),
+                system=pkg in self._system,
+            ))
+
     def _apply_filter(self) -> None:
+        self._build_all()
         keyword = self.search.text().strip().lower()
-        self.list.setUpdatesEnabled(False)
-        self.list.clear()
-        shown = 0
-        for pkg, _activity in self._packages:
-            is_system = pkg in self._system
-            if self._filter == "third" and is_system:
+        visible: list[AppData] = []
+        for app in self._all:
+            if self._filter == "third" and app.system:
                 continue
-            if self._filter == "system" and not is_system:
+            if self._filter == "system" and not app.system:
                 continue
-            name = display_name(pkg, self.aliases)
-            if keyword and keyword not in pkg.lower() and keyword not in name.lower():
+            if self._category != "all" and app.category != self._category:
                 continue
-            item = AppItem(pkg, name)
-            item.setSizeHint(QSize(0, 46))
-            self.list.addItem(item)
-            shown += 1
-        self.list.setUpdatesEnabled(True)
-        if self._packages:
-            self.count.setText(f"{shown} / {len(self._packages)} 个应用")
-        if not self._packages:
-            self.empty.setText("连接设备后，这里会列出所有\n带桌面入口、可以投屏的应用")
-            self.stack.setCurrentWidget(self.empty)
-        elif shown == 0:
-            self.empty.setText("没有匹配的应用")
+            if keyword and keyword not in app.package.lower() and keyword not in app.name.lower():
+                continue
+            visible.append(app)
+
+        total = len(self._all)
+        self.count.setText(f"{len(visible)} / {total} 个应用" if total else "—")
+        if self._view == "desktop":
+            # 即使没有设备也让手机外框常驻，空数据时由桌面内部显示引导语
+            self.desktop.set_data(visible, self._category, self._group_by, self._dock)
+            self.stack.setCurrentWidget(self.desktop_host)
+        elif not visible:
+            self.empty.setText("连接设备后，这里会列出所有\n带桌面入口、可以投屏的应用"
+                               if not total else "没有匹配的应用")
             self.stack.setCurrentWidget(self.empty)
         else:
+            self._fill_list(visible)
             self.stack.setCurrentWidget(self.list)
+
+    def _fill_list(self, apps: list[AppData]) -> None:
+        self.list.setUpdatesEnabled(False)
+        self.list.clear()
+        for app in apps:
+            item = AppItem(app.package, app.name)
+            item.setIcon(QIcon(icon_for(app, 22)))
+            item.setSizeHint(QSize(0, 46))
+            self.list.addItem(item)
+        self.list.setUpdatesEnabled(True)
 
     def _on_double_click(self, item: AppItem) -> None:
         if isinstance(item, AppItem):
@@ -398,6 +573,11 @@ class AppPanel(Card):
         act_launch = menu.addAction("在虚拟显示中投屏")
         act_copy = menu.addAction("复制包名")
         act_alias = menu.addAction("设置显示名称…")
+        cat_menu = menu.addMenu("归类到…")
+        cat_actions = {}
+        for key, text, _color in CATEGORIES:
+            cat_actions[cat_menu.addAction(text)] = key
+        act_reset = menu.addAction("恢复自动分类")
         chosen = menu.exec(self.list.mapToGlobal(pos))
         if chosen == act_launch:
             self.launch_requested.emit(item.package)
@@ -407,6 +587,10 @@ class AppPanel(Card):
             QApplication.clipboard().setText(item.package)
         elif chosen == act_alias:
             self.alias_requested.emit(item.package)
+        elif chosen in cat_actions:
+            self.recategory_requested.emit(item.package, cat_actions[chosen])
+        elif chosen == act_reset:
+            self.recategory_requested.emit(item.package, "")
 
 
 class SettingsPanel(Card):
