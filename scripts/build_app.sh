@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-0.2.0}"
+VERSION="${VERSION:-0.3.0}"
 ARCH="$(uname -m)"
 NAME="ScrcpyStudio-${VERSION}-macOS-${ARCH}"
 PYROOT="${PYROOT:-$(awk -F' = ' '/^home /{print $2}' "$ROOT/.venv/pyvenv.cfg" | sed 's|/bin$||')}"
@@ -35,7 +35,7 @@ chmod +x "$APP/Contents/MacOS/ScrcpyStudio"
 
 echo "==> [2/6] 应用源码"
 mkdir -p "$RES/app"
-for item in app.py core ui README.md requirements.txt; do
+for item in app.py core ui requirements.txt; do
     cp -R "$ROOT/$item" "$RES/app/"
 done
 find "$RES/app" -name "__pycache__" -type d -prune -exec rm -rf {} +

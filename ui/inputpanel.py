@@ -7,8 +7,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from . import style
 from .panels import Card
-from .style import ACCENT, TEXT2, TEXT3
 
 
 class _InputEdit(QPlainTextEdit):
@@ -35,15 +35,23 @@ class InputPanel(Card):
         super().__init__("设备输入")
         self._serial = ""
         self._history: list[str] = []
+        self._status_ok = True
 
-        tip = QLabel("⌘↵ 发送  ·  ⌘K 聚焦")
-        tip.setObjectName("MonoHint")
-        tip.setToolTip("中文需要 ADBKeyBoard 输入法；或点「复制」后在 scrcpy 窗口按 ⌘V 粘贴")
-        self.head_extra.addWidget(tip)
+        self.toggle_btn = QPushButton("收起")
+        self.toggle_btn.setFixedHeight(24)
+        self.toggle_btn.clicked.connect(self._toggle)
+        self.head_extra.addWidget(self.toggle_btn)
+
         self.btn_history = QPushButton("历史")
         self.btn_history.setFixedHeight(24)
         self.btn_history.clicked.connect(self._show_history)
         self.head_extra.addWidget(self.btn_history)
+
+        self.content = QWidget()
+        self.body.addWidget(self.content)
+        lay = QVBoxLayout(self.content)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
 
         top = QHBoxLayout()
         top.setSpacing(8)
@@ -51,11 +59,6 @@ class InputPanel(Card):
         self.edit.setObjectName("InputBox")
         self.edit.setPlaceholderText("在这里输入内容，发送到手机当前获得焦点的输入框…")
         self.edit.setFixedHeight(58)
-        self.edit.setStyleSheet(
-            "QPlainTextEdit#InputBox { background:#FAFAF8; border:1px solid #D3D0C8;"
-            "border-radius:8px; padding:6px 8px; font-size:13px; }"
-            "QPlainTextEdit#InputBox:focus { border:1px solid " + ACCENT + "; }"
-        )
         self.edit.send_shortcut.connect(self.send)
         top.addWidget(self.edit, 1)
 
@@ -66,7 +69,6 @@ class InputPanel(Card):
         self.btn_send.setMinimumHeight(30)
         self.btn_send.clicked.connect(self.send)
         actions.addWidget(self.btn_send)
-
         row_btn = QHBoxLayout()
         row_btn.setSpacing(5)
         btn_copy = QPushButton("复制")
@@ -77,9 +79,8 @@ class InputPanel(Card):
         row_btn.addWidget(btn_copy)
         row_btn.addWidget(btn_clear)
         actions.addLayout(row_btn)
-
         top.addLayout(actions)
-        self.body.addLayout(top)
+        lay.addLayout(top)
 
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
@@ -98,22 +99,20 @@ class InputPanel(Card):
             lambda: self.enter_changed.emit(self.enter.isChecked())
         )
         bottom.addWidget(self.enter)
-
         for text, key in (("回车", "enter"), ("退格", "backspace"), ("返回", "back")):
             btn = QPushButton(text)
             btn.setFixedHeight(24)
             btn.clicked.connect(lambda _=False, k=key: self.key_requested.emit(k))
             bottom.addWidget(btn)
-
         bottom.addStretch(1)
         self.status = QLabel("")
         self.status.setObjectName("Hint")
         bottom.addWidget(self.status)
-        self.body.addLayout(bottom)
+        lay.addLayout(bottom)
 
-        self.hint = QLabel("中文需 ADBKeyBoard，或点「复制」后在 scrcpy 窗口按 ⌘V")
+        self.hint = QLabel("⌘↵ 发送 · ⌘K 聚焦 · 中文需 ADBKeyBoard，或「复制」后在 scrcpy 窗口按 ⌘V")
         self.hint.setObjectName("Hint")
-        self.body.addWidget(self.hint)
+        lay.addWidget(self.hint)
 
     # ---------- 对外 ----------
     def text(self) -> str:
@@ -123,8 +122,20 @@ class InputPanel(Card):
         self.edit.setPlainText(value)
 
     def focus_input(self) -> None:
+        self.set_expanded(True)
         self.edit.setFocus()
         self.edit.selectAll()
+
+    def set_expanded(self, value: bool) -> None:
+        self.content.setVisible(value)
+        self.toggle_btn.setText("收起" if value else "展开")
+        self.setFixedHeight(158 if value else 44)
+
+    def is_expanded(self) -> bool:
+        return self.content.isVisible()
+
+    def _toggle(self) -> None:
+        self.set_expanded(not self.is_expanded())
 
     def set_serial(self, serial: str) -> None:
         self._serial = serial
@@ -147,8 +158,18 @@ class InputPanel(Card):
         self._history = list(items)
 
     def set_status(self, text: str, ok: bool = True) -> None:
-        self.status.setStyleSheet(f"font-size:11px; color:{'#1D9E75' if ok else '#C0392B'};")
+        self._status_ok = ok
         self.status.setText(text)
+        self._apply_status_color()
+
+    def retheme(self) -> None:
+        self._apply_status_color()
+
+    def _apply_status_color(self) -> None:
+        p = style.P()
+        self.status.setStyleSheet(
+            f"font-size:11px; color:{p.ok if self._status_ok else p.danger};"
+        )
 
     def send(self) -> None:
         value = self.text()
@@ -176,4 +197,4 @@ class InputPanel(Card):
         menu.exec(self.btn_history.mapToGlobal(self.btn_history.rect().bottomLeft()))
         if chosen[0] is not None:
             self.set_text(chosen[0])
-            self.edit.setFocus()
+            self.focus_input()

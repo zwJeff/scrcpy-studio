@@ -132,6 +132,12 @@ class AppState:
     input_enter: bool = False
     input_history: list[str] = field(default_factory=list)
 
+    # 外观
+    theme: str = "auto"                   # auto | light | dark
+    launchpad_columns: int = 0            # 0 = 按窗口宽度自适应
+    console_visible: bool = False
+    input_visible: bool = True
+
     # USB 连接
     auto_mirror_usb: bool = False         # 插入 USB 设备后自动整屏投屏
     prefer_usb: bool = True               # USB 与无线同时在线时优先选 USB
@@ -165,6 +171,22 @@ def load_state() -> AppState:
     state.input_mode = raw.get("input_mode", "auto")
     state.input_enter = bool(raw.get("input_enter", False))
     state.input_history = list(raw.get("input_history") or [])[:20]
+    state.theme = raw.get("theme", "auto")
+    if state.theme not in ("auto", "light", "dark"):
+        state.theme = "auto"
+    try:
+        state.launchpad_columns = max(0, min(12, int(raw.get("launchpad_columns", 0))))
+    except (TypeError, ValueError):
+        state.launchpad_columns = 0
+    state.console_visible = bool(raw.get("console_visible", False))
+    state.input_visible = bool(raw.get("input_visible", True))
+    if not raw.get("ui_version"):
+        # 0.3 首次启动：统一切到 Launchpad 连续网格，输入面板展开，列数自适应
+        state.view_mode = "desktop"
+        state.group_by = False
+        state.input_visible = True
+        state.console_visible = False
+        state.launchpad_columns = 0
     state.auto_mirror_usb = bool(raw.get("auto_mirror_usb", False))
     state.prefer_usb = bool(raw.get("prefer_usb", True))
     try:
@@ -188,6 +210,7 @@ def save_state(state: AppState) -> None:
         "adb_path": state.adb_path,
         "scrcpy_path": state.scrcpy_path,
         "view_mode": state.view_mode,
+        "ui_version": 3,
         "category": state.category,
         "group_by": state.group_by,
         "dock_packages": state.dock_packages,
@@ -195,6 +218,10 @@ def save_state(state: AppState) -> None:
         "input_mode": state.input_mode,
         "input_enter": state.input_enter,
         "input_history": state.input_history,
+        "theme": state.theme,
+        "launchpad_columns": state.launchpad_columns,
+        "console_visible": state.console_visible,
+        "input_visible": state.input_visible,
         "auto_mirror_usb": state.auto_mirror_usb,
         "prefer_usb": state.prefer_usb,
         "usb_port": state.usb_port,

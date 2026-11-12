@@ -10,15 +10,17 @@ from PySide6.QtWidgets import (
 from core import adb
 from core.tasks import run_async
 
-from .style import ACCENT, BORDER, OK, TEXT2, TEXT3, WARN
+from . import style
 
-DIALOG_QSS = f"""
-QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 9px; background: #FFFFFF; }}
+def dialog_qss() -> str:
+    p = style.P()
+    return f"""
+QTabWidget::pane {{ border: 1px solid {p.border_soft}; border-radius: 9px; background: {p.glass_soft}; }}
 QTabBar::tab {{
     background: transparent; border: none; padding: 5px 14px; margin-right: 4px;
-    color: {TEXT2}; font-size: 12px;
+    color: {p.text2}; font-size: 12px;
 }}
-QTabBar::tab:selected {{ color: {ACCENT}; font-weight: 600; }}
+QTabBar::tab:selected {{ color: {p.accent}; font-weight: 600; }}
 """
 
 
@@ -29,7 +31,7 @@ class WirelessDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("无线连接")
         self.setFixedWidth(430)
-        self.setStyleSheet(DIALOG_QSS)
+        self.setStyleSheet(dialog_qss())
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 14, 16, 14)
@@ -61,7 +63,7 @@ class WirelessDialog(QDialog):
 
         tip = QLabel("手机已经开启「无线调试」并与本机配对过时，填地址直接连接。")
         tip.setWordWrap(True)
-        tip.setStyleSheet(f"font-size:11px; color:{TEXT3};")
+        tip.setStyleSheet(f"font-size:11px; color:{style.P().text3};")
         lay.addWidget(tip)
 
         self.direct_addr = QLineEdit()
@@ -75,13 +77,13 @@ class WirelessDialog(QDialog):
 
         self.direct_status = QLabel("")
         self.direct_status.setWordWrap(True)
-        self.direct_status.setStyleSheet(f"font-size:11px; color:{TEXT2};")
+        self.direct_status.setStyleSheet(f"font-size:11px; color:{style.P().text2};")
         lay.addWidget(self.direct_status)
 
         lay.addSpacing(4)
         scan_row = QHBoxLayout()
         scan_label = QLabel("局域网自动发现")
-        scan_label.setStyleSheet(f"font-size:11px; color:{TEXT3};")
+        scan_label.setStyleSheet(f"font-size:11px; color:{style.P().text3};")
         scan_row.addWidget(scan_label)
         scan_row.addStretch(1)
         scan_btn = QPushButton("扫描")
@@ -130,22 +132,22 @@ class WirelessDialog(QDialog):
     def _do_connect(self) -> None:
         addr = self.direct_addr.text().strip()
         if not addr:
-            self._status(self.direct_status, "请先填写地址", WARN)
+            self._status(self.direct_status, "请先填写地址", style.P().warn)
             return
         if ":" not in addr:
             addr = f"{addr}:5555"
-        self._status(self.direct_status, "连接中…", TEXT2)
+        self._status(self.direct_status, "连接中…", style.P().text2)
 
         def done(output: str):
             if "connected" in output.lower() and "cannot" not in output.lower() \
                     and "failed" not in output.lower():
-                self._status(self.direct_status, output.strip(), OK)
+                self._status(self.direct_status, output.strip(), style.P().ok)
                 self.connected.emit(addr)
                 self.accept()
             else:
-                self._status(self.direct_status, output.strip() or "连接失败", WARN)
+                self._status(self.direct_status, output.strip() or "连接失败", style.P().warn)
 
-        run_async(adb.connect, done, lambda m: self._status(self.direct_status, m, WARN), addr)
+        run_async(adb.connect, done, lambda m: self._status(self.direct_status, m, style.P().warn), addr)
 
     # ---------- 配对 ----------
     def _build_pair(self) -> QWidget:
@@ -159,7 +161,7 @@ class WirelessDialog(QDialog):
             "把弹窗里的地址和 6 位码填到这里。配对只需一次。"
         )
         tip.setWordWrap(True)
-        tip.setStyleSheet(f"font-size:11px; color:{TEXT3};")
+        tip.setStyleSheet(f"font-size:11px; color:{style.P().text3};")
         lay.addWidget(tip)
 
         self.pair_addr = QLineEdit()
@@ -178,7 +180,7 @@ class WirelessDialog(QDialog):
 
         self.pair_status = QLabel("")
         self.pair_status.setWordWrap(True)
-        self.pair_status.setStyleSheet(f"font-size:11px; color:{TEXT2};")
+        self.pair_status.setStyleSheet(f"font-size:11px; color:{style.P().text2};")
         lay.addWidget(self.pair_status)
         lay.addStretch(1)
         return page
@@ -187,21 +189,21 @@ class WirelessDialog(QDialog):
         addr = self.pair_addr.text().strip()
         code = self.pair_code.text().strip()
         if not addr or not code:
-            self._status(self.pair_status, "地址和配对码都要填", WARN)
+            self._status(self.pair_status, "地址和配对码都要填", style.P().warn)
             return
-        self._status(self.pair_status, "配对中…", TEXT2)
+        self._status(self.pair_status, "配对中…", style.P().text2)
 
         def done(output: str):
             if "successfully" in output.lower():
                 self._status(
                     self.pair_status,
                     "配对成功。请切到「直连」页填入无线调试页面上的地址完成连接。",
-                    OK,
+                    style.P().ok,
                 )
             else:
-                self._status(self.pair_status, output.strip() or "配对失败", WARN)
+                self._status(self.pair_status, output.strip() or "配对失败", style.P().warn)
 
-        run_async(adb.pair, done, lambda m: self._status(self.pair_status, m, WARN), addr, code)
+        run_async(adb.pair, done, lambda m: self._status(self.pair_status, m, style.P().warn), addr, code)
 
     @staticmethod
     def _status(label: QLabel, text: str, color: str) -> None:

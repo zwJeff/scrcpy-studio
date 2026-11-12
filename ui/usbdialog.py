@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (
 from core import adb
 from core.tasks import run_async
 
-from .dialogs import DIALOG_QSS
-from .style import ACCENT, BORDER, MONO, OK, TEXT2, TEXT3, WARN
+from .dialogs import dialog_qss
+from . import style
 
 STEPS = """<ol style="margin:0; padding-left:18px; line-height:1.7;">
 <li>手机 <b>设置 → 关于本机</b>，连点「版本号」7 次开启开发者选项</li>
@@ -19,10 +19,12 @@ STEPS = """<ol style="margin:0; padding-left:18px; line-height:1.7;">
 <li>用<b>支持数据</b>的数据线连接 Mac，手机弹窗勾选「一律允许」并确定</li>
 </ol>"""
 
-STATUS_QSS = f"""
+def status_qss() -> str:
+    p = style.P()
+    return f"""
 QPlainTextEdit {{
-    border: 1px solid {BORDER}; border-radius: 8px; background: #FAF9F5;
-    font-family: {MONO}; font-size: 11px; color: {TEXT2}; padding: 8px;
+    border: 1px solid {p.border_soft}; border-radius: 8px; background: {p.field};
+    font-family: {style.MONO}; font-size: 11px; color: {p.text2}; padding: 8px;
 }}
 """
 
@@ -37,7 +39,7 @@ class UsbDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("USB 连接")
         self.setMinimumWidth(470)
-        self.setStyleSheet(DIALOG_QSS + STATUS_QSS)
+        self.setStyleSheet(dialog_qss() + status_qss())
         self._closed = False
         self._devices: list[adb.Device] = []
 
@@ -51,7 +53,7 @@ class UsbDialog(QDialog):
 
         steps = QLabel(STEPS)
         steps.setWordWrap(True)
-        steps.setStyleSheet(f"font-size:11px; color:{TEXT2};")
+        steps.setStyleSheet(f"font-size:11px; color:{style.P().text2};")
         outer.addWidget(steps)
 
         head = QHBoxLayout()
@@ -78,7 +80,7 @@ class UsbDialog(QDialog):
 
         self.diagnosis = QLabel("")
         self.diagnosis.setWordWrap(True)
-        self.diagnosis.setStyleSheet(f"font-size:11px; color:{TEXT3};")
+        self.diagnosis.setStyleSheet(f"font-size:11px; color:{style.P().text3};")
         outer.addWidget(self.diagnosis)
 
         options = QHBoxLayout()
@@ -111,7 +113,7 @@ class UsbDialog(QDialog):
             "需保证手机与 Mac 在同一 Wi-Fi；切换后 USB 连接会短暂中断。"
         )
         note.setWordWrap(True)
-        note.setStyleSheet(f"font-size:11px; color:{TEXT3};")
+        note.setStyleSheet(f"font-size:11px; color:{style.P().text3};")
         outer.addWidget(note)
 
         switch_row = QHBoxLayout()
@@ -170,15 +172,15 @@ class UsbDialog(QDialog):
             problems = [d.problem for d in devices if d.problem]
             if ready:
                 names = "、".join(d.display_name for d in ready)
-                self._set_diagnosis(f"USB 已就绪：{names}。现在可以直接投屏。", OK)
+                self._set_diagnosis(f"USB 已就绪：{names}。现在可以直接投屏。", style.P().ok)
             elif not devices:
                 self._set_diagnosis(
-                    "未检测到设备。请确认数据线支持数据传输，并已开启 USB 调试。", TEXT3
+                    "未检测到设备。请确认数据线支持数据传输，并已开启 USB 调试。", style.P().text3
                 )
             elif problems:
-                self._set_diagnosis(problems[0], WARN)
+                self._set_diagnosis(problems[0], style.P().warn)
             else:
-                self._set_diagnosis("设备已插入但尚未就绪，请点「重新检测」。", WARN)
+                self._set_diagnosis("设备已插入但尚未就绪，请点「重新检测」。", style.P().warn)
 
             for dev in ready:
                 extra = adb.usb_status(dev.serial)
@@ -199,7 +201,7 @@ class UsbDialog(QDialog):
         def fail(message: str) -> None:
             if not self._closed:
                 self.status.setPlainText(f"检测失败：{message}")
-                self._set_diagnosis("adb 无法执行，请确认已安装 platform-tools。", WARN)
+                self._set_diagnosis("adb 无法执行，请确认已安装 platform-tools。", style.P().warn)
 
         run_async(adb.list_devices, done, fail)
 
@@ -208,7 +210,7 @@ class UsbDialog(QDialog):
         self.diagnosis.setStyleSheet(f"font-size:11px; color:{color};")
 
     def restart_server(self) -> None:
-        self._set_diagnosis("正在重启 adb 服务，请稍候…", TEXT2)
+        self._set_diagnosis("正在重启 adb 服务，请稍候…", style.P().text2)
         self.btn_switch.setEnabled(False)
 
         def done(_devices) -> None:
@@ -217,7 +219,7 @@ class UsbDialog(QDialog):
 
         def fail(message: str) -> None:
             if not self._closed:
-                self._set_diagnosis(f"重启失败：{message}", WARN)
+                self._set_diagnosis(f"重启失败：{message}", style.P().warn)
 
         run_async(adb.restart_server, done, fail)
 
@@ -243,20 +245,20 @@ class UsbDialog(QDialog):
         if answer != QMessageBox.Yes:
             return
         self.btn_switch.setEnabled(False)
-        self._set_diagnosis("正在切换，USB 连接会短暂断开…", TEXT2)
+        self._set_diagnosis("正在切换，USB 连接会短暂断开…", style.P().text2)
 
         def done(addr: str) -> None:
             if self._closed:
                 return
             self.switched.emit(addr)
-            self._set_diagnosis(f"已切换到无线：{addr}。现在可以拔掉数据线。", OK)
+            self._set_diagnosis(f"已切换到无线：{addr}。现在可以拔掉数据线。", style.P().ok)
             self.refresh()
 
         def fail(message: str) -> None:
             if self._closed:
                 return
             self.btn_switch.setEnabled(True)
-            self._set_diagnosis(f"切换失败：{message}", WARN)
+            self._set_diagnosis(f"切换失败：{message}", style.P().warn)
             self.console_note(message)
 
         run_async(adb.switch_to_wireless, done, fail, usb.serial, port)
@@ -266,16 +268,16 @@ class UsbDialog(QDialog):
         if wireless is None:
             QMessageBox.information(self, "没有无线设备", "当前没有可切回 USB 的无线连接。")
             return
-        self._set_diagnosis("正在把设备切回 USB 模式…", TEXT2)
+        self._set_diagnosis("正在把设备切回 USB 模式…", style.P().text2)
 
         def done(_out: str) -> None:
             if not self._closed:
-                self._set_diagnosis("已切回 USB 模式，请重新插上数据线。", OK)
+                self._set_diagnosis("已切回 USB 模式，请重新插上数据线。", style.P().ok)
                 self.refresh()
 
         def fail(message: str) -> None:
             if not self._closed:
-                self._set_diagnosis(f"切回失败：{message}", WARN)
+                self._set_diagnosis(f"切回失败：{message}", style.P().warn)
 
         run_async(adb.usb_mode, done, fail, wireless.serial)
 
@@ -292,5 +294,5 @@ def _separator() -> QWidget:
 
     line = QFrame()
     line.setFrameShape(QFrame.HLine)
-    line.setStyleSheet(f"color:{BORDER};")
+    line.setStyleSheet(f"color:{style.P().border_soft};")
     return line
