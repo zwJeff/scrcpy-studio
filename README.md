@@ -9,7 +9,43 @@ macOS 桌面程序：集中管理 adb / scrcpy，用**手机桌面**的方式浏
 
 > 上图为未连接设备时的引导与诊断状态；插入已授权设备后会显示序列号、型号与连接结论。
 
-## 环境准备
+## 构建产物 · 直接下载
+
+不想配 Python 环境的话，直接下载打好的 App，**解压后双击 `ScrcpyStudio.app` 即可**。
+包内已内嵌 Python 3.13 运行时、PySide6（QtCore / QtGui / QtWidgets）、pyaxmlparser 与 lxml，
+不依赖系统 Python，也不读写项目目录。
+
+| 产物 | 体积 | 说明 |
+|---|---|---|
+| [ScrcpyStudio-0.2.0-macOS-arm64.app.zip](dist/ScrcpyStudio-0.2.0-macOS-arm64.app.zip) | 55 MB | **解压即用**，Apple Silicon / macOS 12+ |
+| [ScrcpyStudio-0.2.0-macOS-arm64-source.tar.gz](dist/ScrcpyStudio-0.2.0-macOS-arm64-source.tar.gz) | 472 KB | 源码快照，按下方「环境准备」安装 |
+| [app.zip.sha256](dist/ScrcpyStudio-0.2.0-macOS-arm64.app.zip.sha256) · [source.tar.gz.sha256](dist/ScrcpyStudio-0.2.0-macOS-arm64-source.tar.gz.sha256) | — | 校验文件 |
+
+```bash
+# 校验下载完整性
+shasum -a 256 -c ScrcpyStudio-0.2.0-macOS-arm64.app.zip.sha256
+# SHA256: 9563c5837ba217c859a823d0f88fe8cd20d20fcdb86b70c2601b339afc524ac8
+```
+
+首次打开若被 Gatekeeper 拦截（未做正式 Apple 签名，只有 ad-hoc 签名）：
+
+```bash
+xattr -cr ~/Downloads/ScrcpyStudio.app   # 或在 Finder 里右键 App → 打开
+```
+
+**仍需自备 `scrcpy`（5.x）与 `adb`** —— 两者不含在包内，装到 `~/.local/bin/` 即可，
+程序会自动在 PATH、`~/.local/opt/`、Homebrew 路径下查找。Intel Mac 请用源码方式运行。
+
+复现构建（产物写入 `dist/`，自动生成 SHA256）：
+
+```bash
+./scripts/build_app.sh
+```
+
+脚本会从 `.venv` 读取 Python 版本与依赖，把运行时和精简后的 Qt 嵌进 `.app/Contents/Resources`，
+做 ad-hoc 签名，再用隔离 HOME + offscreen 启动自检，最后用 `ditto` 打包以保留符号链接与签名。
+
+## 环境准备（从源码运行）
 
 ```bash
 python3 -m venv .venv
@@ -21,8 +57,10 @@ python3 -m venv .venv
 
 ## 启动
 
+使用构建产物时直接双击解压出的 `ScrcpyStudio.app`；从源码运行则：
+
 ```bash
-open ScrcpyStudio.app   # 或双击
+open ScrcpyStudio.app   # 或双击（源码目录里的应用壳）
 ./run.sh                # 命令行
 ```
 
@@ -118,14 +156,20 @@ open ScrcpyStudio.app   # 或双击
 - 首次连接设备后提取图标会占用一些时间（取决于应用数量与设备端是否有 `unzip`），
   之后走本地缓存，几乎瞬时。
 - 未做正式代码签名，首次 `open` 若被 Gatekeeper 拦截：右键 App → 打开。
+- 构建产物为 ad-hoc 签名、面向 Apple Silicon（arm64）与 macOS 12+；Intel Mac 请走源码方式。
+  包内不含 `scrcpy` / `adb`，且二进制产物会让仓库体积随版本增长，大版本建议改用 GitHub Release 附件。
 
 ## 目录结构
 
 ```
 app.py                  入口
-run.sh                  启动脚本
+run.sh                  源码启动脚本
+push.sh                 GitHub 推送脚本（走 443 端口）
 requirements.txt        Python 依赖
-ScrcpyStudio.app/       macOS 应用壳（双击启动）
+ScrcpyStudio.app/       源码目录里的 macOS 应用壳
+scripts/build_app.sh    自包含 App 构建脚本
+scripts/shot*.py        离屏截图自检脚本
+dist/                   构建产物（app.zip / source.tar.gz / SHA256）
 core/adb.py             adb 封装（设备 / 应用 / 连接 / 配对 / mDNS / USB 诊断）
 core/usbwatch.py        track-devices 热插拔事件流
 core/apkinfo.py         APK 名称与图标提取、轻量取数、本地缓存
@@ -141,5 +185,4 @@ ui/inputpanel.py        设备输入面板
 ui/dialogs.py           无线连接 / 配对对话框
 ui/usbdialog.py         USB 连接向导
 ui/main_window.py       主窗口与业务接线
-scripts/                离屏截图自检脚本
 ```

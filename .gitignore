@@ -5,7 +5,11 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 build/
-dist/
+# dist 里只放行正式构建产物，临时文件不入库
+dist/*
+!dist/*.zip
+!dist/*.tar.gz
+!dist/*.sha256
 
 # macOS
 .DS_Store
