@@ -25,6 +25,8 @@ def main() -> int:
     app.setStyleSheet(QSS)
 
     window = MainWindow()
+    # 截图脚本不改写用户配置：避免 closeEvent 里 persist 触发磁盘写入
+    window.persist = lambda: None
     window.resize(1320, 980)
     window.show()
 
@@ -33,9 +35,15 @@ def main() -> int:
     def capture() -> None:
         window.grab().save(str(target))
         print(f"saved {target}")
+        # 离屏渲染不需要继续跑真机轮询 / 图标提取，主动收尾避免退出卡顿
+        window.timer.stop()
+        window._info_timer.stop()
+        window._info_token += 1
+        window.watcher.stop()
+        window._info_pool.shutdown(wait=False, cancel_futures=True)
         app.quit()
 
-    QTimer.singleShot(2200, capture)
+    QTimer.singleShot(3200, capture)
     return app.exec()
 
 

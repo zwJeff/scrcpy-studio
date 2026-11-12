@@ -1,9 +1,13 @@
 # Scrcpy Studio
 
 macOS 桌面程序：集中管理 adb / scrcpy，用**手机桌面**的方式浏览手机上所有可投屏的应用，
-双击即在独立虚拟显示中单独投屏；还能从 Mac 直接往手机输入框推文字。
+双击即在独立虚拟显示中单独投屏；支持 USB 与无线两种连接，还能从 Mac 直接往手机输入框推文字。
 
-![界面预览](screenshot-mock.png)
+![界面预览](screenshot.png)
+
+![USB 连接向导](screenshot-usb.png)
+
+> 上图为未连接设备时的引导与诊断状态；插入已授权设备后会显示序列号、型号与连接结论。
 
 ## 环境准备
 
@@ -23,6 +27,25 @@ open ScrcpyStudio.app   # 或双击
 ```
 
 ## 功能
+
+### USB 连接与热插拔
+
+插上数据线即可用，不需要先配无线调试：
+
+- **秒级热插拔检测**：基于 `adb track-devices` 事件流（`core/usbwatch.py`），
+  插入 / 拔出 / 授权状态变化立刻反映到设备栏，断线自动重连，比定时轮询更及时。
+- **连接诊断**：区分 `device` / `unauthorized` / `offline` / `no permissions` / `recovery`
+  等状态，用不同颜色标识并给出对应的处理建议；可一键 `adb kill-server && start-server` 修复卡住的授权。
+- **USB 连接向导**（设备栏 →「USB 连接…」）：三步开启 USB 调试的说明、
+  实时 `adb devices -l` 状态、诊断结论、「一键 USB 投屏」，以及 USB → 无线切换。
+- **一键投屏**：设备栏「USB 投屏」按钮；也可勾选「插入 USB 自动投屏」，插线即拉起 scrcpy。
+- **USB → 无线**：`adb tcpip <端口>` 取设备 wlan IP 后 `adb connect`，
+  端口可在向导里改；`core/adb.py` 里保证「取 IP → tcpip → connect」的调用顺序。
+- 同时有 USB 和无线设备时可设置「USB 优先」；USB 设备的「断开」语义已修正为
+  停止投屏 / 取消选择，不会误调用 `adb disconnect`。
+
+已在真机（Lenovo TB570FU / Android 13）验证：设备识别、51 个应用读取、
+真实图标提取，以及 `scrcpy -s <serial>` 启动（Metal 渲染、VideoToolbox 硬解、2992×1872）。
 
 ### 手机桌面与应用信息
 
@@ -73,12 +96,20 @@ open ScrcpyStudio.app   # 或双击
 键盘鼠标模式 / 熄屏投屏 / 保持唤醒 / 录制 MP4 / 虚拟显示尺寸与 DPI，
 全部映射到 scrcpy 5.x 命令行参数并持久化。底部控制台实时显示 adb 与 scrcpy 输出。
 
-## 无线连接流程（Android 11+，一次性）
+## 连接方式
+
+**USB（推荐先用这个）**：手机开「开发者选项 → USB 调试」→ 数据线连 Mac →
+弹窗点「允许 USB 调试」→ App 设备栏出现设备 → 点「USB 投屏」。
+小米 / OPPO 等机型如需反向控制，还要额外打开「USB 调试（安全设置）」。
+
+**无线（Android 11+，一次性）**：
 
 1. 手机：开发者选项 → 无线调试 → 打开 → 「使用配对码配对设备」
 2. App：设备栏 → 配对 → 填弹窗里的地址和 6 位码
 3. App：设备栏 → 无线连接 → 填无线调试页面上的地址（和配对地址不同）
 4. 成功后 App 会记住设备，之后只要无线调试开着，点「刷新」即可直连
+
+**无线（Android 10 及以下）**：先 USB 连上，用「USB → 无线」切到 `adb tcpip 5555`，再拔线。
 
 ## 已知限制
 
@@ -95,17 +126,20 @@ app.py                  入口
 run.sh                  启动脚本
 requirements.txt        Python 依赖
 ScrcpyStudio.app/       macOS 应用壳（双击启动）
-core/adb.py             adb 封装（设备 / 应用 / 连接 / 配对 / mDNS）
+core/adb.py             adb 封装（设备 / 应用 / 连接 / 配对 / mDNS / USB 诊断）
+core/usbwatch.py        track-devices 热插拔事件流
 core/apkinfo.py         APK 名称与图标提取、轻量取数、本地缓存
 core/categories.py      应用分组规则引擎
 core/textinput.py       文本注入与 ADBKeyBoard 广播
 core/config.py          参数建模与持久化
 core/aliases.py         包名 → 中文名映射
 core/tasks.py           线程池异步包装
+core/paths.py           可执行文件查找
 ui/desktop.py           手机桌面视图与图标绘制
 ui/panels.py            三栏面板与筛选
 ui/inputpanel.py        设备输入面板
 ui/dialogs.py           无线连接 / 配对对话框
+ui/usbdialog.py         USB 连接向导
 ui/main_window.py       主窗口与业务接线
 scripts/                离屏截图自检脚本
 ```

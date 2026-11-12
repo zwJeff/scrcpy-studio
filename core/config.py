@@ -132,6 +132,11 @@ class AppState:
     input_enter: bool = False
     input_history: list[str] = field(default_factory=list)
 
+    # USB 连接
+    auto_mirror_usb: bool = False         # 插入 USB 设备后自动整屏投屏
+    prefer_usb: bool = True               # USB 与无线同时在线时优先选 USB
+    usb_port: int = 5555                  # USB → 无线切换使用的端口
+
 
 def load_state() -> AppState:
     state = AppState()
@@ -160,6 +165,14 @@ def load_state() -> AppState:
     state.input_mode = raw.get("input_mode", "auto")
     state.input_enter = bool(raw.get("input_enter", False))
     state.input_history = list(raw.get("input_history") or [])[:20]
+    state.auto_mirror_usb = bool(raw.get("auto_mirror_usb", False))
+    state.prefer_usb = bool(raw.get("prefer_usb", True))
+    try:
+        state.usb_port = int(raw.get("usb_port", 5555))
+    except (TypeError, ValueError):
+        state.usb_port = 5555
+    if not 1 <= state.usb_port <= 65535:
+        state.usb_port = 5555
     return state
 
 
@@ -182,6 +195,9 @@ def save_state(state: AppState) -> None:
         "input_mode": state.input_mode,
         "input_enter": state.input_enter,
         "input_history": state.input_history,
+        "auto_mirror_usb": state.auto_mirror_usb,
+        "prefer_usb": state.prefer_usb,
+        "usb_port": state.usb_port,
     }
     tmp = CONFIG_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), "utf-8")

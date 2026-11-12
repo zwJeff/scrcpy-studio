@@ -19,11 +19,13 @@ from core.aliases import display_name
 from core.config import build_args, load_state, save_state
 from core.paths import ADB, SCRCPY
 from core.tasks import run_async
+from core.usbwatch import DeviceWatcher
 
 from .dialogs import WirelessDialog
 from .inputpanel import InputPanel
 from .panels import AppPanel, ConsolePanel, DevicePanel, SettingsPanel
 from .style import ACCENT, ACCENT_SOFT, BORDER, OK, TEXT, TEXT2, TEXT3, WARN
+from .usbdialog import UsbDialog
 
 
 def _app_icon() -> QIcon:
@@ -61,6 +63,16 @@ class MainWindow(QMainWindow):
         self.system_cache: dict[str, set[str]] = {}
         self.current_serial: str = ""
         self.proc: QProcess | None = None
+
+        # USB 热插拔：track-devices 事件流 + 新设备自动投屏
+        self._prev_usb: set[str] = set()
+        self._watcher_seeded = False
+        self._pending_auto_mirror = ""
+        self.watcher = DeviceWatcher(self)
+        self.watcher.devices_changed.connect(self.on_device_event)
+        self.watcher.watcher_error.connect(
+            lambda m: self.console.log(f"[设备监视] {m}")
+        )
 
         # 应用信息提取（线程池 + 主线程批量刷新，避免每拉一个 APK 就重绘桌面）
         self._info_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="appinfo")
@@ -112,10 +124,11 @@ class MainWindow(QMainWindow):
         self._install_shortcuts()
 
         self.timer = QTimer(self)
-        self.timer.setInterval(5000)
+        self.timer.setInterval(15000)   # 轮询仅作兜底，实时性由 track-devices 提供
         self.timer.timeout.connect(lambda: self.refresh_devices(silent=True))
         self.timer.start()
 
+        self.watcher.start()
         self.refresh_devices()
         self.console.log(f"adb     → {ADB}")
         self.console.log(f"scrcpy  → {SCRCPY}")
@@ -159,6 +172,13 @@ class MainWindow(QMainWindow):
         self.device_panel.wireless_clicked.connect(self.open_wireless_dialog)
         self.device_panel.pair_clicked.connect(self.open_pair_dialog)
         self.device_panel.disconnect_clicked.connect(self.disconnect_device)
+        self.device_panel.usb_mirror_clicked.connect(lambda: self.usb_mirror())
+        self.device_panel.usb_setup_clicked.connect(self.open_usb_dialog)
+        self.device_panel.restart_adb_clicked.connect(self.restart_adb)
+        self.device_panel.to_wireless_clicked.connect(self.to_wireless)
+        self.device_panel.auto_mirror_changed.connect(
+            lambda v: self._set_state(auto_mirror_usb=v)
+        )
 
         self.app_panel.reload_clicked.connect(lambda: self.load_apps(force=True))
         self.app_panel.info_refresh_clicked.connect(lambda: self.load_appinfo(force=True))
@@ -181,6 +201,7 @@ class MainWindow(QMainWindow):
         self.input_panel.enter_changed.connect(lambda e: self._set_state(input_enter=e))
 
     def _init_from_state(self) -> None:
+        self.device_panel.set_auto_mirror(self.state.auto_mirror_usb)
         self.app_panel.set_dock(self.state.dock_packages)
         self.app_panel.set_overrides(self.state.category_overrides)
         self.app_panel.set_appinfo(apkinfo.all_cached())
@@ -195,6 +216,10 @@ class MainWindow(QMainWindow):
     def _install_shortcuts(self) -> None:
         for seq in ("Ctrl+Return", "Meta+Return"):
             QShortcut(QKeySequence(seq), self).activated.connect(self.input_panel.send)
+        for seq in ("Ctrl+U", "Meta+U"):
+            QShortcut(QKeySequence(seq), self).activated.connect(
+                lambda: self.usb_mirror()
+            )
         for seq in ("Ctrl+K", "Meta+K"):
             QShortcut(QKeySequence(seq), self).activated.connect(
                 self.input_panel.focus_input
@@ -214,15 +239,22 @@ class MainWindow(QMainWindow):
         def done(devices: list[adb.Device]) -> None:
             self.devices = devices
             online = [d for d in devices if d.online]
-            target = self.current_serial or self.state.last_serial
             serials = {d.serial for d in online}
-            if target not in serials and online:
-                target = online[0].serial
+            target = self.current_serial or self.state.last_serial
+            if self._pending_auto_mirror in serials:
+                target = self._pending_auto_mirror
+            elif target not in serials and online:
+                target = self._pick_preferred(online)
             self.device_panel.set_devices(devices, target)
             self.input_panel.set_serial(target if target in serials else "")
             self._update_status()
             if not silent:
                 self.console.log(f"发现 {len(devices)} 台设备")
+
+            pending, self._pending_auto_mirror = self._pending_auto_mirror, ""
+            if pending and pending in serials and self.proc is None \
+                    and self.state.auto_mirror_usb:
+                QTimer.singleShot(500, lambda: self.usb_mirror(pending))
 
         def fail(message: str) -> None:
             self.console.log(f"[错误] {message}")
@@ -230,10 +262,38 @@ class MainWindow(QMainWindow):
 
         run_async(adb.list_devices, done, fail)
 
+    def _pick_preferred(self, online: list[adb.Device]) -> str:
+        """USB 与无线同时在线时，可配置优先走 USB（延迟更低、更稳定）。"""
+        if self.state.prefer_usb:
+            usb = [d for d in online if not d.wireless]
+            if usb:
+                return usb[0].serial
+        return online[0].serial
+
+    def on_device_event(self, snapshot) -> None:
+        """track-devices 推送的状态快照：秒级感知 USB 插拔。"""
+        usb_now = {
+            serial for serial, state in snapshot
+            if state == "device" and ":" not in serial
+        }
+        first_frame = not self._watcher_seeded
+        self._watcher_seeded = True
+        added = usb_now - self._prev_usb
+        self._prev_usb = usb_now
+        if added and not first_frame:
+            self.console.log(f"[USB] 检测到设备插入：{'、'.join(sorted(added))}")
+            if self.state.auto_mirror_usb and self.proc is None:
+                self._pending_auto_mirror = sorted(added)[0]
+        self.refresh_devices(silent=True)
+
     def _update_status(self) -> None:
         online = [d for d in self.devices if d.online]
+        dev = next((d for d in online if d.serial == self.current_serial), None)
+        if dev is None and online:
+            dev = online[0]
         if online:
-            label = online[0].display_name if len(online) == 1 else f"{len(online)} 台设备在线"
+            suffix = f" · 共 {len(online)} 台" if len(online) > 1 else ""
+            label = f"{dev.display_name} · {dev.label}{suffix}" if dev else f"{len(online)} 台设备在线"
             self.status_pill.setText(f"● {label}")
             self.status_pill.setStyleSheet(
                 f"font-size:11px; color:{OK}; background:#E1F5EE;"
@@ -279,14 +339,99 @@ class MainWindow(QMainWindow):
         run_async(adb.device_info, done, lambda _m: None, serial)
 
     def disconnect_device(self) -> None:
-        serial = self.device_panel.current_serial()
-        if not serial:
+        dev = self.device_panel.current_device()
+        if dev is None:
+            return
+        if not dev.wireless:
+            QMessageBox.information(
+                self, "USB 设备无法远程断开",
+                "USB 连接直接拔下数据线即可。\n\n"
+                "如果想拔线后继续投屏，点「USB → 无线」先切换到 Wi-Fi 连接。",
+            )
             return
         run_async(adb.disconnect, lambda out: self.console.log(out.strip()),
-                  lambda m: self.console.log(f"[错误] {m}"), serial)
+                  lambda m: self.console.log(f"[错误] {m}"), dev.serial)
         self.current_serial = ""
         self.input_panel.set_serial("")
         QTimer.singleShot(800, lambda: self.refresh_devices())
+
+    # ---------- USB 连接 ----------
+    def usb_mirror(self, serial: str | None = None) -> None:
+        """一键：选中 USB 设备并以整屏模式启动 scrcpy。"""
+        if self.proc is not None:
+            self.console.log("已有投屏进程在运行，请先停止")
+            return
+        usb = [d for d in self.devices if not d.wireless]
+        ready = [d for d in usb if d.online]
+        if not ready:
+            problem = next((d.problem for d in usb if d.problem), "")
+            QMessageBox.information(
+                self, "没有可用的 USB 设备",
+                problem or "请用数据线连接手机，开启开发者选项里的「USB 调试」并授权。\n"
+                           "详细步骤见「USB 连接…」。",
+            )
+            return
+        target = serial if serial in {d.serial for d in ready} else ready[0].serial
+        self.device_panel.select_serial(target)
+        self.settings_panel.mode.setCurrentIndex(0)   # 整屏模式
+        self.console.log(f"[USB] 启动投屏：{target}")
+        self.start_mirror(serial=target)
+
+    def open_usb_dialog(self) -> None:
+        dialog = UsbDialog(
+            self, port=self.state.usb_port, prefer_usb=self.state.prefer_usb
+        )
+        dialog.mirror_requested.connect(lambda: QTimer.singleShot(120, self.usb_mirror))
+        dialog.switched.connect(self.on_switched)
+        dialog.prefer_usb_changed.connect(lambda v: self._set_state(prefer_usb=v))
+        dialog.exec()
+        self.state.usb_port = dialog.port.value()
+        self.persist()
+
+    def restart_adb(self) -> None:
+        self.console.log("正在重启 adb 服务…")
+
+        def done(devices: list[adb.Device]) -> None:
+            self.console.log(f"adb 服务已重启，检测到 {len(devices)} 台设备")
+            self.refresh_devices()
+
+        def fail(message: str) -> None:
+            self.console.log(f"[错误] 重启 adb 失败：{message}")
+
+        run_async(adb.restart_server, done, fail)
+
+    def to_wireless(self) -> None:
+        """借当前 USB 连接把设备切到 TCP/IP，之后可拔线继续投屏。"""
+        dev = self.device_panel.current_device()
+        if dev is None or dev.wireless or not dev.online:
+            QMessageBox.information(
+                self, "需要 USB 设备", "请先选中一台已通过 USB 连接并授权的设备。"
+            )
+            return
+        port = self.state.usb_port
+        answer = QMessageBox.question(
+            self, "切换为无线连接",
+            f"把 {dev.display_name} 切换到 TCP/IP 端口 {port}，之后可以拔掉数据线。\n\n"
+            "需要手机与 Mac 处于同一 Wi-Fi，切换时 USB 连接会短暂中断。是否继续？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.console.log(f"[USB → 无线] 正在切换 {dev.serial} → 端口 {port}…")
+        run_async(
+            adb.switch_to_wireless,
+            self.on_switched,
+            lambda m: self.console.log(f"[错误] 切换失败：{m}"),
+            dev.serial, port,
+        )
+
+    def on_switched(self, addr: str) -> None:
+        self.console.log(f"[USB → 无线] 已连接 {addr}，现在可以拔掉数据线")
+        self.device_panel.set_hint(f"已切换到无线 {addr}，可以拔掉数据线了。", "ok")
+        self.state.last_serial = addr
+        self.current_serial = addr
+        self.persist()
+        QTimer.singleShot(1200, lambda: self.refresh_devices())
 
     def open_wireless_dialog(self) -> None:
         dialog = WirelessDialog(self)
@@ -483,11 +628,12 @@ class MainWindow(QMainWindow):
         self.state.last_package = package
         self.start_mirror(package=package)
 
-    def start_mirror(self, package: str | None = None) -> None:
+    def start_mirror(self, package: str | None = None,
+                     serial: str | None = None) -> None:
         if self.proc is not None:
             self.console.log("已有投屏进程在运行，请先停止")
             return
-        serial = self.device_panel.current_serial()
+        serial = serial or self.device_panel.current_serial()
         if not serial:
             QMessageBox.information(self, "没有可用设备", "请先用 USB 连接或在「无线连接」里连上手机。")
             return
@@ -547,6 +693,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         self._info_token += 1
         self._info_timer.stop()
+        self.timer.stop()
+        self.watcher.stop()
         self.persist()
         if self.proc is not None:
             self.proc.terminate()

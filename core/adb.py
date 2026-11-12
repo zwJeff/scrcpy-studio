@@ -59,6 +59,32 @@ class Device:
     def label(self) -> str:
         return "无线" if self.wireless else "USB"
 
+    @property
+    def state_kind(self) -> str:
+        """把 adb 的原始状态归一成界面可判断的类别。"""
+        if self.online:
+            return "ok"
+        if "unauthorized" in self.state:
+            return "unauthorized"
+        if "no permissions" in self.state or "no_permissions" in self.state:
+            return "no_permissions"
+        if "offline" in self.state:
+            return "offline"
+        if "recovery" in self.state or "sideload" in self.state:
+            return "recovery"
+        return "other"
+
+    @property
+    def problem(self) -> str:
+        """设备不可用时，给出可操作的处理建议。"""
+        return {
+            "unauthorized": "手机上尚未授权：解锁屏幕，在弹出的「允许 USB 调试吗」里勾选「一律允许」并确定。",
+            "no_permissions": "USB 权限不足：换一根支持数据的数据线或换个 USB 口，然后重新插拔。",
+            "offline": "设备离线：重新插拔数据线，或点「重启 adb 服务」后重试。",
+            "recovery": "设备处于 Recovery / Sideload 模式，无法投屏，请先正常开机。",
+            "other": f"adb 状态为 {self.state}，可尝试重新插拔或重启 adb 服务。",
+        }.get(self.state_kind, "")
+
 
 def list_devices() -> list[Device]:
     out = run(["devices", "-l"], timeout=15)
@@ -116,8 +142,64 @@ def pair(addr: str, code: str) -> str:
     return run(["pair", addr, code], timeout=30)
 
 
-def tcpip(port: int = 5555) -> str:
-    return run(["tcpip", str(port)], timeout=15)
+def tcpip(port: int = 5555, serial: str | None = None) -> str:
+    return run(["tcpip", str(port)], timeout=15, serial=serial)
+
+
+def usb_mode(serial: str) -> str:
+    """把当前运行在 TCP/IP 监听的设备切回 USB（相当于 adb usb）。"""
+    return run(["usb"], timeout=15, serial=serial)
+
+
+def switch_to_wireless(serial: str, port: int = 5555) -> str:
+    """借 USB 连接把设备切到 TCP/IP 监听，返回可以拔线后继续用的地址。
+
+    顺序很重要：必须先在 USB 链路上取到 Wi-Fi IP，再让 adbd 重启到 tcpip，
+    最后用无线地址重新连接。
+    """
+    if not 1 <= port <= 65535:
+        raise AdbError("端口需在 1–65535 之间")
+    ip = wlan_ip(serial)
+    if not ip:
+        raise AdbError("取不到设备的 Wi-Fi 地址，请确认手机与电脑在同一 Wi-Fi")
+    tcpip(port, serial)
+    addr = f"{ip}:{port}"
+    # adbd 切模式需要一点时间，adb connect 自带重试，这里最多再试两次
+    reply = ""
+    for _ in range(3):
+        reply = connect(addr)
+        if "connected to" in reply.lower():
+            return addr
+        __import__("time").sleep(1.2)
+    raise AdbError(f"已切到 TCP/IP 但连接 {addr} 失败：{reply.strip()}")
+
+
+def usb_status(serial: str) -> dict[str, str]:
+    """读取 USB 链路与充电状态，用于在连接向导里给出可见反馈。"""
+    result: dict[str, str] = {}
+    try:
+        raw = run(["shell", "getprop sys.usb.state; getprop sys.usb.config"],
+                  serial=serial, timeout=12)
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if lines:
+            result["usb_state"] = lines[0]
+        if len(lines) > 1:
+            result["usb_config"] = lines[1]
+    except AdbError:
+        pass
+    try:
+        raw = run(["shell", "dumpsys battery | grep -E 'AC powered|USB powered|status|level'"],
+                  serial=serial, timeout=12)
+        for line in raw.splitlines():
+            key, _, value = line.strip().partition(":")
+            key = key.strip().lower()
+            if "usb powered" in key:
+                result["usb_powered"] = value.strip()
+            elif "level" == key:
+                result["level"] = value.strip()
+    except AdbError:
+        pass
+    return result
 
 
 def wlan_ip(serial: str) -> str:
@@ -229,3 +311,12 @@ def kill_server() -> str:
 
 def start_server() -> str:
     return run(["start-server"], timeout=20)
+
+
+def restart_server() -> list[Device]:
+    """USB 授权卡住 / 设备显示 offline 时的通用修复手段。"""
+    kill_server()
+    start_server()
+    # 给 adbd 重新枚举 USB 设备留一点时间
+    __import__("time").sleep(1.2)
+    return list_devices()

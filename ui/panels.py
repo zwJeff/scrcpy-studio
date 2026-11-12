@@ -149,7 +149,17 @@ class AppItem(QListWidgetItem):
 
 
 class DeviceRow(QWidget):
-    def __init__(self, title: str, meta: str, online: bool, wireless: bool):
+    DOT_COLORS = {
+        "ok": "#1D9E75",
+        "unauthorized": "#E8A13C",
+        "no_permissions": "#E8A13C",
+        "offline": "#D4675E",
+        "recovery": "#D4675E",
+        "other": "#B4B2A9",
+    }
+
+    def __init__(self, title: str, meta: str, online: bool, wireless: bool,
+                 state_kind: str = "ok"):
         super().__init__()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 6, 10, 6)
@@ -159,7 +169,8 @@ class DeviceRow(QWidget):
         top.setSpacing(6)
         dot = QLabel("●")
         dot.setStyleSheet(
-            f"color:{'#1D9E75' if online else '#B4B2A9'}; font-size:10px; background:transparent;"
+            f"color:{self.DOT_COLORS.get(state_kind, '#B4B2A9')};"
+            " font-size:10px; background:transparent;"
         )
         top.addWidget(dot)
         name = QLabel(title)
@@ -186,11 +197,21 @@ class DevicePanel(Card):
     wireless_clicked = Signal()
     pair_clicked = Signal()
     disconnect_clicked = Signal()
+    usb_mirror_clicked = Signal()
+    usb_setup_clicked = Signal()
+    restart_adb_clicked = Signal()
+    to_wireless_clicked = Signal()
+    auto_mirror_changed = Signal(bool)
 
     def __init__(self):
         super().__init__("设备")
         from .style import TEXT3 as T3  # 局部别名，避免循环引用歧义
 
+        restart = QPushButton("重启 adb")
+        restart.setFixedHeight(24)
+        restart.setToolTip("设备显示 offline / 未授权时，用这个重置 USB 调试连接")
+        restart.clicked.connect(self.restart_adb_clicked)
+        self.head_extra.addWidget(restart)
         refresh = QPushButton("刷新")
         refresh.setFixedHeight(24)
         refresh.clicked.connect(self.refresh_clicked)
@@ -200,48 +221,97 @@ class DevicePanel(Card):
         self.list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list.setUniformItemSizes(False)
         self.list.currentItemChanged.connect(self._on_change)
-        self.empty = QLabel("未发现设备\n\n用 USB 连接手机，\n或点下方「无线连接…」")
+        self.empty = QLabel(
+            "未发现设备\n\n用数据线连接手机并开启 USB 调试，\n"
+            "或点下方「无线连接…」"
+        )
         self.empty.setAlignment(Qt.AlignCenter)
         self.empty.setStyleSheet(f"font-size:12px; color:{TEXT3};")
         self.stack = QStackedWidget()
         self.stack.addWidget(self.list)
         self.stack.addWidget(self.empty)
         self.stack.setCurrentWidget(self.empty)
-        self.body.addWidget(self.stack, 1)
+        self.stack.setMinimumHeight(118)
+        self.stack.setMaximumHeight(240)
+        self.body.addWidget(self.stack)
 
         self.body.addWidget(_hline())
 
-        row = QHBoxLayout()
-        row.setSpacing(6)
+        primary_row = QHBoxLayout()
+        primary_row.setSpacing(6)
+        self.btn_usb_mirror = QPushButton("USB 投屏")
+        self.btn_usb_mirror.setObjectName("Primary")
+        self.btn_usb_mirror.setToolTip("选中 USB 设备并立即以整屏模式投屏（⌘U）")
+        self.btn_usb_mirror.clicked.connect(self.usb_mirror_clicked)
         self.btn_wireless = QPushButton("无线连接…")
         self.btn_wireless.setObjectName("Ghost")
         self.btn_wireless.clicked.connect(self.wireless_clicked)
+        primary_row.addWidget(self.btn_usb_mirror, 1)
+        primary_row.addWidget(self.btn_wireless, 1)
+        self.body.addLayout(primary_row)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.btn_usb_setup = QPushButton("USB 连接…")
+        self.btn_usb_setup.setToolTip("查看 USB 连接状态、授权引导与无线切换")
+        self.btn_usb_setup.clicked.connect(self.usb_setup_clicked)
         self.btn_pair = QPushButton("配对")
         self.btn_pair.clicked.connect(self.pair_clicked)
-        row.addWidget(self.btn_wireless, 1)
-        row.addWidget(self.btn_pair)
+        row.addWidget(self.btn_usb_setup, 1)
+        row.addWidget(self.btn_pair, 1)
         self.body.addLayout(row)
 
+        self.hint = QLabel("")
+        self.hint.setWordWrap(True)
+        self.hint.setVisible(False)
+        self.body.addWidget(self.hint)
+
+        options = QHBoxLayout()
+        options.setSpacing(6)
+        self.auto_mirror = QCheckBox("插入 USB 自动投屏")
+        self.auto_mirror.setToolTip("检测到新插入的 USB 设备且当前没有投屏时，自动开始整屏投屏")
+        self.auto_mirror.stateChanged.connect(
+            lambda state: self.auto_mirror_changed.emit(state != 0)
+        )
+        options.addWidget(self.auto_mirror, 1)
+        self.body.addLayout(options)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(6)
+        self.btn_to_wireless = QPushButton("USB → 无线")
+        self.btn_to_wireless.setToolTip("借当前 USB 连接切到 TCP/IP，之后可以拔掉数据线")
+        self.btn_to_wireless.clicked.connect(self.to_wireless_clicked)
         self.btn_disconnect = QPushButton("断开当前设备")
         self.btn_disconnect.clicked.connect(self.disconnect_clicked)
         self.btn_disconnect.setEnabled(False)
-        self.body.addWidget(self.btn_disconnect)
+        actions.addWidget(self.btn_to_wireless, 1)
+        actions.addWidget(self.btn_disconnect, 1)
+        self.body.addLayout(actions)
 
         self.info = QLabel("尚未发现设备")
         self.info.setWordWrap(True)
         self.info.setStyleSheet(f"font-size:11px; color:{T3};")
         self.body.addWidget(self.info)
+        self.body.addStretch(1)
+
+        self._device_map: dict[str, object] = {}
 
     def _on_change(self, current, _previous) -> None:
         if current is None:
             self.btn_disconnect.setEnabled(False)
             return
-        self.btn_disconnect.setEnabled(True)
-        self.device_selected.emit(current.data(Qt.UserRole))
+        serial = current.data(Qt.UserRole)
+        dev = self._device_map.get(serial)
+        wireless = bool(dev and getattr(dev, "wireless", False))
+        self.btn_disconnect.setEnabled(wireless)
+        self.btn_disconnect.setText("断开当前设备" if wireless else "USB 请拔线")
+        self.btn_to_wireless.setEnabled(bool(dev and not wireless and dev.online))
+        self.device_selected.emit(serial)
 
     def set_devices(self, devices, selected_serial: str = "") -> None:
         self.list.blockSignals(True)
         self.list.clear()
+        self._device_map = {dev.serial: dev for dev in devices}
         target_row = -1
         for index, dev in enumerate(devices):
             meta = dev.serial if dev.online else f"{dev.serial} · {dev.state}"
@@ -249,7 +319,10 @@ class DevicePanel(Card):
             item.setData(Qt.UserRole, dev.serial)
             item.setSizeHint(QSize(0, 50))
             self.list.addItem(item)
-            self.list.setItemWidget(item, DeviceRow(dev.display_name, meta, dev.online, dev.wireless))
+            self.list.setItemWidget(
+                item,
+                DeviceRow(dev.display_name, meta, dev.online, dev.wireless, dev.state_kind),
+            )
             if dev.serial == selected_serial:
                 target_row = index
         self.list.blockSignals(False)
@@ -261,9 +334,39 @@ class DevicePanel(Card):
         else:
             self.btn_disconnect.setEnabled(False)
             self.info.setText("尚未发现设备")
+
+        usb_present = any(not dev.wireless for dev in devices)
+        self.btn_usb_mirror.setEnabled(usb_present)
+        self.btn_usb_mirror.setToolTip(
+            "选中 USB 设备并立即以整屏模式投屏（⌘U）" if usb_present
+            else "当前没有 USB 设备，请先用数据线连接手机"
+        )
+        problem = next((dev.problem for dev in devices if dev.problem), "")
+        self.set_hint(problem, "warn")
         current = self.list.currentItem()
         if current is not None:
             self.device_selected.emit(current.data(Qt.UserRole))
+
+    def set_hint(self, text: str, level: str = "warn") -> None:
+        self.hint.setVisible(bool(text))
+        if not text:
+            return
+        palette = {
+            "warn": ("#FDF3E2", "#A2691C"),
+            "error": ("#FBECEA", "#A8443C"),
+            "ok": ("#E6F5EE", "#1D7D5E"),
+        }
+        bg, fg = palette.get(level, palette["warn"])
+        self.hint.setText(text)
+        self.hint.setStyleSheet(
+            f"font-size:11px; color:{fg}; background:{bg};"
+            "border-radius:6px; padding:6px 8px;"
+        )
+
+    def set_auto_mirror(self, enabled: bool) -> None:
+        self.auto_mirror.blockSignals(True)
+        self.auto_mirror.setChecked(enabled)
+        self.auto_mirror.blockSignals(False)
 
     def set_info(self, html: str) -> None:
         self.info.setText(html)
@@ -271,6 +374,25 @@ class DevicePanel(Card):
     def current_serial(self) -> str:
         item = self.list.currentItem()
         return item.data(Qt.UserRole) if item else ""
+
+    def current_device(self):
+        return self._device_map.get(self.current_serial())
+
+    def select_serial(self, serial: str) -> bool:
+        """选中指定设备；返回是否找到。"""
+        for row in range(self.list.count()):
+            item = self.list.item(row)
+            if item.data(Qt.UserRole) == serial:
+                self.list.setCurrentRow(row)
+                return True
+        return False
+
+    def usb_devices(self) -> list:
+        """当前在线的 USB 设备（按列表顺序）。"""
+        return [
+            dev for dev in self._device_map.values()
+            if not dev.wireless and dev.online
+        ]
 
 
 class AppPanel(Card):
