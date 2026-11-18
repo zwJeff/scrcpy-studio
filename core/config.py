@@ -140,6 +140,7 @@ class AppState:
 
     # 悬浮球
     auto_float_on_connect: bool = False   # 设备上线后自动进入悬浮球模式
+    auto_float_on_mirror: bool = True    # 投屏成功后自动进入悬浮球并收起面板
     float_ball_pos: list[int] = field(default_factory=list)
     usb_autostart: bool = False           # 是否已启用「插 USB 自动启动 App」守护
 
@@ -193,6 +194,7 @@ def load_state() -> AppState:
         state.console_visible = False
         state.launchpad_columns = 0
     state.auto_float_on_connect = bool(raw.get("auto_float_on_connect", False))
+    state.auto_float_on_mirror = bool(raw.get("auto_float_on_mirror", True))
     pos = raw.get("float_ball_pos") or []
     state.float_ball_pos = [int(v) for v in pos[:2]] if len(pos) >= 2 else []
     state.usb_autostart = bool(raw.get("usb_autostart", False))
@@ -232,6 +234,7 @@ def save_state(state: AppState) -> None:
         "console_visible": state.console_visible,
         "input_visible": state.input_visible,
         "auto_float_on_connect": state.auto_float_on_connect,
+        "auto_float_on_mirror": state.auto_float_on_mirror,
         "float_ball_pos": state.float_ball_pos,
         "usb_autostart": state.usb_autostart,
         "auto_mirror_usb": state.auto_mirror_usb,

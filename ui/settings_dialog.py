@@ -113,6 +113,10 @@ class SettingsDialog(QDialog):
         self.auto_float.setChecked(state.auto_float_on_connect)
         form.addRow("", self.auto_float)
 
+        self.auto_float_mirror = QCheckBox("投屏成功后自动进入悬浮球模式并收起面板")
+        self.auto_float_mirror.setChecked(state.auto_float_on_mirror)
+        form.addRow("", self.auto_float_mirror)
+
         self.usb_port = QSpinBox()
         self.usb_port.setRange(1, 65535)
         self.usb_port.setValue(state.usb_port)
@@ -220,6 +224,7 @@ class SettingsDialog(QDialog):
         self.prefer_usb.setChecked(True)
         self.auto_mirror.setChecked(False)
         self.auto_float.setChecked(False)
+        self.auto_float_mirror.setChecked(True)
         self.usb_port.setValue(5555)
         self.adb_path.clear()
         self.scrcpy_path.clear()
@@ -244,6 +249,9 @@ class SettingsDialog(QDialog):
 
     def auto_float_value(self) -> bool:
         return self.auto_float.isChecked()
+
+    def auto_float_mirror_value(self) -> bool:
+        return self.auto_float_mirror.isChecked()
 
     def usb_port_value(self) -> int:
         return self.usb_port.value()

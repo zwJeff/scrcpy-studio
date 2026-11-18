@@ -23,7 +23,7 @@ from core.config import build_args, load_state, save_state
 from core.tasks import run_async
 from core.usbwatch import DeviceWatcher
 
-from . import style
+from . import nativewindow, style
 from .dialogs import WirelessDialog
 from .floatball import FloatController
 from .inputpanel import InputPanel
@@ -301,7 +301,7 @@ class MainWindow(QMainWindow):
     def _about(self) -> None:
         QMessageBox.about(
             self, "关于 Scrcpy Studio",
-            "Scrcpy Studio 0.4.1\n\n"
+            "Scrcpy Studio 0.5.0\n\n"
             "macOS 桌面投屏工作台：USB / 无线设备管理、真实应用图标、"
             "应用分类、设备文本输入、多窗口单应用投屏与悬浮球模式。\n\n"
             "基于 scrcpy 5.x 与 adb。",
@@ -318,6 +318,7 @@ class MainWindow(QMainWindow):
             dev.display_name if dev else self.current_serial.split(":")[0]
         )
         self.float_controller.show(self.state.float_ball_pos or None)
+        self.float_controller.collapse_panel()
         self.hide()
         self.console.log("[悬浮球] 已进入悬浮球模式 · 点击小球展开应用")
 
@@ -396,6 +397,7 @@ class MainWindow(QMainWindow):
         self.float_controller.exit_requested.connect(self.exit_float_mode)
         self.float_controller.settings_requested.connect(self.open_settings)
         self.float_controller.reload_requested.connect(lambda: self.load_apps(force=True))
+        self.float_controller.focus_requested.connect(self.focus_mirror)
         self.float_controller.quit_requested.connect(self.close)
 
         self.input_panel.send_requested.connect(self.send_text)
@@ -469,6 +471,7 @@ class MainWindow(QMainWindow):
             self.state.auto_mirror_usb = dialog.auto_mirror_value()
             self.state.usb_port = dialog.usb_port_value()
             self.state.auto_float_on_connect = dialog.auto_float_value()
+            self.state.auto_float_on_mirror = dialog.auto_float_mirror_value()
             self.state.adb_path = dialog.adb_path_value()
             self.state.scrcpy_path = dialog.scrcpy_path_value()
             paths.set_overrides(self.state.adb_path, self.state.scrcpy_path)
@@ -944,6 +947,20 @@ class MainWindow(QMainWindow):
                                     "请先用 USB 连接或在「无线连接」里连上手机。")
             return
 
+        # 同一应用已经开着投屏窗口：不再启动第二个进程，把已有窗口切到前台
+        if package:
+            existing = next(
+                (w for w in self.processes.values()
+                 if w.package == package and w.serial == serial
+                 and w.proc.state() != QProcess.NotRunning),
+                None,
+            )
+            if existing is not None:
+                self.console.log(f"[去重] {existing.label} 已在投屏中，切换到该窗口")
+                self.focus_mirror(existing.id)
+                self.float_controller.collapse_panel()
+                return
+
         # scrcpy < 5.0 没有 --new-display / --start-app：降级为整屏 + 设备端启动应用
         if package and not paths.supports_new_display(self.state.scrcpy_path):
             answer = QMessageBox.question(
@@ -972,9 +989,11 @@ class MainWindow(QMainWindow):
             dev = next((d for d in self.devices if d.serial == serial), None)
             label = f"{(dev.display_name if dev else serial)} · 整屏"
             for window in self.processes.values():
-                if window.serial == serial and not window.package:
-                    self.console.log("该设备已经在整屏投屏中")
-                    self.input_panel.set_status("该设备已在整屏投屏中", ok=False)
+                if window.serial == serial and not window.package \
+                        and window.proc.state() != QProcess.NotRunning:
+                    self.console.log("该设备已经在整屏投屏中，切换到该窗口")
+                    self.focus_mirror(window.id)
+                    self.float_controller.collapse_panel()
                     return
 
         self.state.mirror = cfg
@@ -1002,6 +1021,50 @@ class MainWindow(QMainWindow):
                                                   serial, proc)
         self.console.log(f"投屏窗口 {window_id} → {label}（可继续打开其他应用）")
         self._refresh_mirror_ui()
+        if self.state.auto_float_on_mirror:
+            QTimer.singleShot(180, self._after_mirror_started)
+
+    def _after_mirror_started(self) -> None:
+        """投屏成功后进入悬浮球形态，并收起应用面板 / hover 列表。"""
+        if not self.state.auto_float_on_mirror:
+            return
+        if self._float_mode:
+            self.float_controller.collapse_panel()
+        else:
+            self.enter_float_mode()
+
+    def focus_mirror(self, window_id: str) -> None:
+        """把已存在的 scrcpy 窗口激活到前台，而不是再开一个。"""
+        window = self.processes.get(window_id)
+        if window is None:
+            return
+        pid = int(window.proc.processId() or 0)
+        label = window.label
+        # 点击悬浮球/列表时先确保本 App 是前台，macOS 才允许把别的进程激活
+        self.float_controller.ball.activateWindow()
+        if pid and nativewindow.focus_process(pid):
+            self.console.log(f"[置前] {label}（pid {pid}）")
+            self.input_panel.set_status(f"已切换到 {label}", ok=True)
+            return
+
+        self.console.log(f"[去重] {label} 已在投屏中（pid {pid}），尝试备用方式置前…")
+
+        def done(ok: bool) -> None:
+            if ok:
+                self.console.log(f"[置前] 已通过系统事件切换到 {label}")
+                self.input_panel.set_status(f"已切换到 {label}", ok=True)
+            else:
+                self.console.log(
+                    "[置前] 系统未允许自动前置（可在「系统设置 → 隐私与安全性 → 自动化」授权）；"
+                    "该应用已在投屏中，可手动点击其窗口"
+                )
+                self.input_panel.set_status(f"{label} 已在投屏中", ok=True)
+
+        if pid:
+            run_async(lambda: nativewindow.focus_process_fallback(pid), done,
+                      lambda _m: done(False))
+        else:
+            done(False)
 
     def _launch_on_device(self, serial: str, package: str) -> None:
         """旧版 scrcpy 的降级路径：在手机上把应用拉到前台，再整屏投屏。"""
@@ -1048,8 +1111,10 @@ class MainWindow(QMainWindow):
         self._refresh_mirror_ui()
 
     def _refresh_mirror_ui(self) -> None:
+        windows = [(w.id, w.label) for w in self.processes.values()]
         self.mirror_bar.setVisible(bool(self.processes))
-        self.mirror_bar.set_windows([(w.id, w.label) for w in self.processes.values()])
+        self.mirror_bar.set_windows(windows)
+        self.float_controller.set_running_windows(windows)
         self.app_panel.set_running({w.package for w in self.processes.values() if w.package})
         self._update_status()
 

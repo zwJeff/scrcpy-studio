@@ -42,6 +42,7 @@ class FloatBall(QWidget):
     """圆形玻璃悬浮球，可拖拽；短按视为点击。"""
     clicked = Signal()
     moved = Signal()
+    hovered = Signal(bool)
     context_requested = Signal(QPoint)
 
     def __init__(self):
@@ -52,8 +53,9 @@ class FloatBall(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFixedSize(BALL_SIZE, BALL_SIZE)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("单击展开应用 · 拖动可移动 · 右键更多")
+        self.setToolTip("单击展开应用 · 悬停看投屏窗口 · 拖动可移动 · 右键更多")
         self._hover = False
+        self._count = 0
         self._press_pos: QPoint | None = None
         self._drag_offset: QPoint | None = None
         self._dragged = False
@@ -78,20 +80,37 @@ class FloatBall(QWidget):
         icon = _ball_icon(38)
         painter.drawPixmap(int((self.width() - icon.width()) / 2),
                            int((self.height() - icon.height()) / 2), icon)
-        if self._hover:
-            painter.setBrush(QColor(p.accent))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(QRectF(self.width() - 15, 6, 9, 9))
+        if self._count > 0:
+            text = str(self._count) if self._count < 100 else "99+"
+            size = 23 if len(text) < 3 else 28
+            badge = QRectF(self.width() - size - 1, 1, size, size)
+            painter.setBrush(QColor(226, 74, 74))
+            painter.setPen(QColor(255, 255, 255, 210))
+            painter.drawEllipse(badge)
+            font = QFont("Helvetica Neue")
+            font.setPixelSize(12 if len(text) < 3 else 10)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(QColor("#FFFFFF"))
+            painter.drawText(badge, Qt.AlignCenter, text)
         painter.end()
+
+    def set_count(self, value: int) -> None:
+        value = max(0, int(value))
+        if value != self._count:
+            self._count = value
+            self.update()
 
     def enterEvent(self, event) -> None:  # noqa: N802
         self._hover = True
         self.update()
+        self.hovered.emit(True)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         self._hover = False
         self.update()
+        self.hovered.emit(False)
         super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -438,6 +457,105 @@ class FloatPanel(QWidget):
         self._rebuild()
 
 
+LIST_W = 232
+ROW_H = 34
+
+
+class FloatWindowList(QWidget):
+    """悬停悬浮球时展示的「正在投屏」小列表；点击条目把对应窗口置前。"""
+    focus_requested = Signal(str)
+    entered = Signal()
+    left = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedWidth(LIST_W)
+        self._windows: list[tuple[str, str]] = []
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 9, 12, 9)
+        outer.setSpacing(3)
+        self.title = QLabel("正在投屏")
+        self.title.setObjectName("FloatListTitle")
+        outer.addWidget(self.title)
+        self.rows = QVBoxLayout()
+        self.rows.setSpacing(2)
+        outer.addLayout(self.rows)
+        self.hint = QLabel("点击名称切换到该投屏窗口")
+        self.hint.setObjectName("FloatListHint")
+        outer.addWidget(self.hint)
+        self.set_windows([])
+
+    def set_windows(self, windows: list[tuple[str, str]]) -> None:
+        self._windows = list(windows)
+        while self.rows.count():
+            item = self.rows.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+        self.title.setText(f"正在投屏 · {len(self._windows)}")
+        for window_id, label in self._windows:
+            btn = QPushButton(label)
+            btn.setObjectName("FloatWinRow")
+            btn.setFixedHeight(ROW_H)
+            btn.setToolTip(label)
+            btn.clicked.connect(
+                lambda _=False, wid=window_id: self.focus_requested.emit(wid)
+            )
+            self.rows.addWidget(btn)
+        height = 20 + 3 + len(self._windows) * (ROW_H + 2) + 3 + 16 + 18
+        self.setFixedHeight(max(72, height))
+        self._apply_palette()
+
+    def set_theme(self) -> None:
+        self._apply_palette()
+        self.update()
+
+    def _apply_palette(self) -> None:
+        dark = style.is_dark()
+        fg = "#EEF5FF" if dark else "#1B2534"
+        fg2 = "rgba(226,238,255,0.62)" if dark else "rgba(40,60,90,0.62)"
+        row_bg = "rgba(255,255,255,0.09)" if dark else "rgba(30,70,130,0.07)"
+        self.setStyleSheet(f"""
+            #FloatListTitle {{ font-size:12px; font-weight:600; color:{fg}; }}
+            #FloatListHint {{ font-size:10px; color:{fg2}; }}
+            #FloatWinRow {{
+                background:{row_bg}; border:1px solid rgba(255,255,255,0.10);
+                border-radius:8px; color:{fg}; font-size:12px;
+                text-align:left; padding:0 10px;
+            }}
+            #FloatWinRow:hover {{ background:rgba(72,140,255,0.42); color:#FFFFFF; }}
+        """)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        dark = style.is_dark()
+        bg = QColor(8, 30, 54, 236) if dark else QColor(247, 251, 255, 240)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, self.width(), self.height()), 14, 14)
+        painter.setClipPath(path)
+        painter.fillRect(self.rect(), bg)
+        painter.setPen(QColor(255, 255, 255, 78) if dark else QColor(30, 60, 100, 60))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(
+            QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 14, 14
+        )
+        painter.end()
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self.entered.emit()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self.left.emit()
+        super().leaveEvent(event)
+
+
 class FloatController(QObject):
     """管理悬浮球、弹出面板与位置跟随。"""
     launch_requested = Signal(str)
@@ -446,18 +564,35 @@ class FloatController(QObject):
     settings_requested = Signal()
     reload_requested = Signal()
     quit_requested = Signal()
+    focus_requested = Signal(str)          # 把已投屏窗口置前（window_id）
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self.ball = FloatBall()
         self.panel = FloatPanel()
+        self.window_list = FloatWindowList()
         self._apps: list[AppData] = []
+        self._running_windows: list[tuple[str, str]] = []
+        self._ball_hover = False
 
         self.ball.clicked.connect(self.toggle_panel)
         self.ball.moved.connect(self._on_ball_moved)
+        self.ball.hovered.connect(self._on_hover)
         self.ball.context_requested.connect(self._show_ball_menu)
         self.panel.launch_requested.connect(self.launch_requested)
         self.panel.menu_requested.connect(self._show_panel_menu)
+        self.window_list.focus_requested.connect(self._on_list_focus)
+
+        self._show_list_timer = QTimer(self)
+        self._show_list_timer.setSingleShot(True)
+        self._show_list_timer.setInterval(160)
+        self._show_list_timer.timeout.connect(self._show_window_list)
+        self._hide_list_timer = QTimer(self)
+        self._hide_list_timer.setSingleShot(True)
+        self._hide_list_timer.setInterval(280)
+        self._hide_list_timer.timeout.connect(self._hide_window_list)
+        self.window_list.entered.connect(self._hide_list_timer.stop)
+        self.window_list.left.connect(self._schedule_hide_list)
 
         # macOS 会在切换 Spaces / 别的 App 全屏 / 本 App 失活时重排窗口层级，
         # 周期性重新断言原生层级，保证悬浮球始终最前。
@@ -488,15 +623,18 @@ class FloatController(QObject):
 
     def hide(self) -> None:
         self._top_timer.stop()
+        self._hide_window_list()
+        self.window_list.hide()
         self.panel.hide()
         self.ball.hide()
 
     # ---------- 始终最前 ----------
     def _pin_all(self) -> bool:
-        # 对两个窗口无条件设置：Qt 的 Popup 可能随时隐藏/重建 NSWindow 并重置
-        # level，等「可见」才设置会漏掉它刚显示出来的那一瞬间。
+        # 对三个窗口无条件设置：Qt 的 Popup / Tool 随时可能隐藏/重建 NSWindow
+        # 并重置 level，等「可见」才设置会漏掉刚显示出来的那一瞬间。
         ok = nativewindow.pin(self.ball, nativewindow.BALL_LEVEL)
         ok = nativewindow.pin(self.panel, nativewindow.PANEL_LEVEL) and ok
+        ok = nativewindow.pin(self.window_list, nativewindow.LIST_LEVEL) and ok
         return ok
 
     def _assert_on_top(self) -> None:
@@ -529,10 +667,71 @@ class FloatController(QObject):
 
     def apply_theme(self) -> None:
         self.panel.set_theme()
+        self.window_list.set_theme()
         self.ball.update()
+
+    # ---------- 运行中窗口 / 角标 / hover 小列表 ----------
+    def set_running_windows(self, windows: list[tuple[str, str]]) -> None:
+        self._running_windows = list(windows)
+        self.ball.set_count(len(self._running_windows))
+        self.window_list.set_windows(self._running_windows)
+        if not self._running_windows:
+            self._hide_window_list()
+        elif self.window_list.isVisible():
+            self.place_window_list()
+
+    def _on_hover(self, inside: bool) -> None:
+        self._ball_hover = inside
+        if inside:
+            self._hide_list_timer.stop()
+            if not self.panel.isVisible() and self._running_windows:
+                self._show_list_timer.start()
+        else:
+            self._show_list_timer.stop()
+            self._schedule_hide_list()
+
+    def _schedule_hide_list(self) -> None:
+        if self.window_list.isVisible():
+            self._hide_list_timer.start()
+
+    def _show_window_list(self) -> None:
+        if not self._ball_hover or self.panel.isVisible() \
+                or not self._running_windows or not self.ball.isVisible():
+            return
+        self.place_window_list()
+        self.window_list.show()
+        self.window_list.raise_()
+        QTimer.singleShot(0, self._assert_on_top)
+
+    def _hide_window_list(self) -> None:
+        self._show_list_timer.stop()
+        self._hide_list_timer.stop()
+        self.window_list.hide()
+
+    def _on_list_focus(self, window_id: str) -> None:
+        self._hide_window_list()
+        self.focus_requested.emit(window_id)
+
+    def place_window_list(self) -> None:
+        center = QPoint(self.ball.x() + BALL_SIZE // 2,
+                        self.ball.y() + BALL_SIZE // 2)
+        screen = QGuiApplication.screenAt(center) or QGuiApplication.primaryScreen()
+        area = screen.availableGeometry() if screen else None
+        if area is None:
+            area = QApplication.primaryScreen().availableGeometry()
+        x, y = self._choose_origin(center.x(), center.y(), area,
+                                    self.window_list.width(),
+                                    self.window_list.height())
+        self.window_list.move(x, y)
+
+    def collapse_panel(self) -> None:
+        """收起应用面板（投屏成功后调用），hover 小列表也一并收起。"""
+        self.panel.hide()
+        self._hide_window_list()
 
     # ---------- 面板定位 ----------
     def toggle_panel(self) -> None:
+        self._hide_window_list()
         if self.panel.isVisible():
             self.panel.hide()
             return
@@ -547,6 +746,7 @@ class FloatController(QObject):
             QTimer.singleShot(delay, self._assert_on_top)
 
     def _on_ball_moved(self) -> None:
+        self._hide_window_list()       # 拖动时列表位置失效，先收起
         if self.panel.isVisible():
             self.place_panel()
 

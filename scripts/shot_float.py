@@ -57,16 +57,25 @@ def main() -> int:
     controller.set_apps(mock_apps())
     controller.set_device_label("TB570FU")
     controller.show((60, 60))
+    controller.set_running_windows([
+        ("a1", "微信"), ("b2", "WPS Office"), ("c3", "抖音"),
+    ])
+
     controller.panel.setFixedSize(830, 620)
-    controller.panel.move(150, 130)
+    controller.panel.move(300, 150)
     controller.panel.ensure_built()   # 面板隐藏时数据延迟构建，截图前显式触发
     controller.panel.show()
 
-    canvas = QImage(1120, 820, QImage.Format_ARGB32_Premultiplied)
+    # 悬停时出现的小列表（截图里固定放到小球下方，避免与应用面板重叠）
+    controller.window_list.move(60, 140)
+    controller.window_list.show()
+
+    canvas = QImage(1240, 860, QImage.Format_ARGB32_Premultiplied)
     canvas.fill(Qt.transparent)
     painter = QPainter(canvas)
     style.paint_wallpaper(painter, canvas.rect())
-    painter.drawImage(150, 130, render(controller.panel))
+    painter.drawImage(300, 150, render(controller.panel))
+    painter.drawImage(60, 140, render(controller.window_list))
     painter.drawImage(60, 60, render(controller.ball))
     painter.end()
 
