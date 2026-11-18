@@ -1,11 +1,13 @@
 # Scrcpy Studio
 
 macOS 桌面投屏工作台：集中管理 adb / scrcpy，用 **macOS Launchpad 风格**的网格浏览手机上所有可投屏的应用，
-双击即在独立虚拟显示中单独投屏；支持 USB / 无线连接、深浅色毛玻璃主题、设备文本输入，以及**多个应用窗口同时投屏**。
+双击即在独立虚拟显示中单独投屏；支持 USB / 无线连接、深浅色毛玻璃主题、设备文本输入，以及**多个应用窗口同时投屏**；还可以收起为桌面悬浮球，点一下即展开应用列表。
 
 ![深色模式 · Launchpad 应用舞台](screenshot-dark.png)
 
 ![浅色模式](screenshot-light.png)
+
+![悬浮球模式 · 半透明应用面板](screenshot-float.png)
 
 <details>
 <summary>更多界面预览</summary>
@@ -18,6 +20,8 @@ macOS 桌面投屏工作台：集中管理 adb / scrcpy，用 **macOS Launchpad 
 
 ![空状态](screenshot.png)
 
+![悬浮球 · 浅色](screenshot-float-light.png)
+
 </details>
 
 ## 构建产物 · 直接下载
@@ -28,14 +32,14 @@ macOS 桌面投屏工作台：集中管理 adb / scrcpy，用 **macOS Launchpad 
 
 | 产物 | 体积 | 说明 |
 |---|---|---|
-| [ScrcpyStudio-0.3.1-macOS-arm64.app.zip](dist/ScrcpyStudio-0.3.1-macOS-arm64.app.zip) | 约 56 MB | **解压即用**，Apple Silicon / macOS 12+ |
-| [ScrcpyStudio-0.3.1-macOS-arm64-source.tar.gz](dist/ScrcpyStudio-0.3.1-macOS-arm64-source.tar.gz) | 约 1.6 MB | 源码快照（含界面预览图），按下方「环境准备」安装 |
-| [app.zip.sha256](dist/ScrcpyStudio-0.3.1-macOS-arm64.app.zip.sha256) · [source.tar.gz.sha256](dist/ScrcpyStudio-0.3.1-macOS-arm64-source.tar.gz.sha256) | — | 校验文件 |
+| [ScrcpyStudio-0.4.0-macOS-arm64.app.zip](dist/ScrcpyStudio-0.4.0-macOS-arm64.app.zip) | 约 56 MB | **解压即用**，Apple Silicon / macOS 12+ |
+| [ScrcpyStudio-0.4.0-macOS-arm64-source.tar.gz](dist/ScrcpyStudio-0.4.0-macOS-arm64-source.tar.gz) | 约 3 MB | 源码快照（含界面预览图与图标），按下方「环境准备」安装 |
+| [app.zip.sha256](dist/ScrcpyStudio-0.4.0-macOS-arm64.app.zip.sha256) · [source.tar.gz.sha256](dist/ScrcpyStudio-0.4.0-macOS-arm64-source.tar.gz.sha256) | — | 校验文件 |
 
 ```bash
 # 校验下载完整性
-shasum -a 256 -c ScrcpyStudio-0.3.1-macOS-arm64.app.zip.sha256
-# SHA256: e7dbfdb9c4d33b823cfbe6d3894931f2f69af647a18e054a060f54f4ac621164
+shasum -a 256 -c ScrcpyStudio-0.4.0-macOS-arm64.app.zip.sha256
+# SHA256: f65f333c0bdb87d50f983beb898ca028035b3d81b75179f31d2654c155365c26
 ```
 
 首次打开若被 Gatekeeper 拦截（未做正式 Apple 签名，只有 ad-hoc 签名）：
@@ -57,6 +61,32 @@ xattr -cr ~/Downloads/ScrcpyStudio.app   # 或在 Finder 里右键 App → 打�
 做 ad-hoc 签名，再用隔离 HOME + offscreen 启动自检，最后用 `ditto` 打包以保留符号链接与签名。
 
 ## 界面与交互
+
+### 悬浮球模式
+
+点工具栏「◉」、菜单「进入悬浮球模式」或 `⌘⇧F` 即可收起主窗口，桌面只留一个
+始终最前的圆形悬浮球（显示 App 图标）。单击展开半透明 Launchpad 风格应用面板，
+再点一次或点击别处收起；拖动小球可换位置，位置会记住，面板会自动跟着小球选择展开方向。
+
+- 面板按小球所在屏幕与象限决定向左/右、向上/下展开，并 clamp 到屏幕可用区域，
+  **始终保证 7 列 × 4 行的最小网格完整可见**（屏幕较小时自动缩小单元尺寸）。
+- 面板包含标题、设备名 / 应用数、分类胶囊、分隔线与 7 列图标网格；
+  **单击图标即在新窗口投屏**，仍可同时打开多个应用。
+- 右键小球（或面板「⋯」）：展开 / 收起、重新读取应用、显示主窗口、设置、
+  退出悬浮球模式、退出程序。
+- 设置 → 设备连接 勾选「连接设备后自动进入悬浮球模式」后，
+  设备从离线变在线时会自动收起主窗口并切到悬浮球形态。
+
+### 插 USB 自动启动 App
+
+App 未运行时插入 USB 也想被唤醒，需要系统级守护（macOS 没有「USB 插入即启动」的 launchd 键）。
+在 **设置 → 设备连接 → 启用插 USB 自动启动…** 里确认后，程序会安装
+`~/Library/LaunchAgents/local.jeff.scrcpy-studio.usbwatch.plist`：登录时常驻、
+每 3 秒用 `adb devices` 检查一次，检测到 USB 设备上线就 `open` 启动 App。
+同一个按钮可随时「停用」，日志在 `~/Library/Logs/ScrcpyStudio-usbwatch.log`。
+
+> 该守护由用户显式启用，安装 App 时不会自动写入；启用后会随账户登录常驻一个轻量后台进程。
+> 若同时勾选「自动进入悬浮球模式」，插线后就会直接变成悬浮球形态。
 
 ### Launchpad 风格应用舞台
 
@@ -150,6 +180,7 @@ USB → 无线、断开等高级操作收进「⋯」菜单。
 | `⌘F` | 聚焦应用搜索框 |
 | `⌘,` | 打开设置 |
 | `⌘U` | USB 整屏投屏 |
+| `⌘⇧F` | 进入 / 退出悬浮球模式 |
 | `Esc` | 清空当前获得焦点的输入框 / 搜索框 |
 
 ## 环境准备（从源码运行）
@@ -220,6 +251,8 @@ brew upgrade scrcpy                   # Homebrew 版本可能停留在 4.x
 - 构建产物为 ad-hoc 签名、面向 Apple Silicon；Intel Mac 请走源码方式。
   二进制产物会让仓库体积随版本增长，大版本建议改用 GitHub Release 附件或 Git LFS。
 - 真机上「同时投多个应用窗口」依赖设备允许多虚拟显示；部分 ROM 可能有数量上限。
+- 悬浮球是 Qt 置顶窗口，在 macOS 全屏 Spaces 或某些全屏 App 之上可能被遮挡。
+- 「插 USB 自动启动」依赖 launchd 守护轮询（3 秒间隔），拔插后需等待一个检查周期。
 
 ## 目录结构
 
@@ -237,17 +270,22 @@ core/textinput.py       文本注入与 ADBKeyBoard 广播
 core/config.py          参数建模与持久化
 core/aliases.py         包名 → 中文名映射
 core/tasks.py           线程池异步包装
-core/paths.py           可执行文件查找
+core/paths.py           可执行文件查找、图标路径与子进程环境
+core/usbautostart.py    插 USB 自启 LaunchAgent 管理
+resources/              App 图标（AppIcon.png / AppIcon.icns）
 ui/style.py             主题引擎（深浅色 / 毛玻璃 / 全局 QSS）
 ui/launchpad.py         Launchpad 大图标网格与分类胶囊
 ui/panels.py            设备栏 / 应用舞台 / 参数表单 / 日志
 ui/settings_dialog.py   设置对话框（投屏 / 外观 / 连接）
 ui/mirrorbar.py         多投屏窗口状态条
+ui/floatball.py         悬浮球、跟随定位与半透明应用面板
 ui/inputpanel.py        设备输入面板
 ui/dialogs.py           无线连接 / 配对对话框
 ui/usbdialog.py         USB 连接向导
 ui/main_window.py       主窗口、工具栏与多进程投屏管理
 scripts/build_app.sh    自包含 App 构建脚本
+scripts/make_icon.py    App 图标生成（PNG + icns）
+scripts/usb_watch.sh    USB 自启守护脚本
 scripts/shot*.py        离屏截图自检脚本
 dist/                   构建产物（app.zip / source.tar.gz / SHA256）
 ```

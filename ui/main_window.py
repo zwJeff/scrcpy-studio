@@ -25,6 +25,7 @@ from core.usbwatch import DeviceWatcher
 
 from . import style
 from .dialogs import WirelessDialog
+from .floatball import FloatController
 from .inputpanel import InputPanel
 from .mirrorbar import MirrorBar
 from .panels import AppPanel, ConsolePanel, DevicePanel
@@ -42,6 +43,9 @@ class MirrorWindow:
 
 
 def _app_icon() -> QIcon:
+    if paths.ICON_PNG.exists():
+        return QIcon(str(paths.ICON_PNG))
+    # 资源缺失时的兜底
     pix = QPixmap(128, 128)
     pix.fill(Qt.transparent)
     painter = QPainter(pix)
@@ -85,6 +89,8 @@ class MainWindow(QMainWindow):
         self.system_cache: dict[str, set[str]] = {}
         self.current_serial: str = ""
         self.processes: dict[str, MirrorWindow] = {}
+        self._float_mode = False
+        self._had_online = False
 
         # USB 热插拔
         self._prev_usb: set[str] = set()
@@ -140,6 +146,7 @@ class MainWindow(QMainWindow):
         body.addLayout(middle, 1)
         outer.addLayout(body, 1)
 
+        self.float_controller = FloatController(self)
         self._wire()
         self._init_from_state()
         self._install_shortcuts()
@@ -206,6 +213,12 @@ class MainWindow(QMainWindow):
         self.status_pill = QLabel("未连接")
         row.addWidget(self.status_pill)
 
+        self.float_btn = QPushButton("◉")
+        self.float_btn.setObjectName("Round")
+        self.float_btn.setToolTip("进入悬浮球模式（⌘⇧F）")
+        self.float_btn.clicked.connect(self.enter_float_mode)
+        row.addWidget(self.float_btn)
+
         self.theme_btn = QPushButton("◐")
         self.theme_btn.setObjectName("Round")
         self.theme_btn.setToolTip("外观：跟随系统 / 浅色 / 深色")
@@ -245,6 +258,7 @@ class MainWindow(QMainWindow):
         menu.addAction("重新读取应用", lambda: self.load_apps(force=True))
         menu.addAction("重载应用图标", lambda: self.load_appinfo(force=True))
         menu.addAction("整屏投屏", lambda: self.start_mirror())
+        menu.addAction("进入悬浮球模式", self.enter_float_mode)
         menu.addSeparator()
 
         view = menu.addMenu("应用视图")
@@ -284,11 +298,44 @@ class MainWindow(QMainWindow):
     def _about(self) -> None:
         QMessageBox.about(
             self, "关于 Scrcpy Studio",
-            "Scrcpy Studio 0.3.1\n\n"
+            "Scrcpy Studio 0.4.0\n\n"
             "macOS 桌面投屏工作台：USB / 无线设备管理、真实应用图标、"
-            "应用分类、设备文本输入，以及多窗口单应用投屏。\n\n"
+            "应用分类、设备文本输入、多窗口单应用投屏与悬浮球模式。\n\n"
             "基于 scrcpy 5.x 与 adb。",
         )
+
+    # ---------- 悬浮球 ----------
+    def enter_float_mode(self) -> None:
+        if self._float_mode:
+            return
+        self._float_mode = True
+        self.float_controller.set_apps(self.app_panel.all_apps())
+        dev = next((d for d in self.devices if d.serial == self.current_serial), None)
+        self.float_controller.set_device_label(
+            dev.display_name if dev else self.current_serial.split(":")[0]
+        )
+        self.float_controller.show(self.state.float_ball_pos or None)
+        self.hide()
+        self.console.log("[悬浮球] 已进入悬浮球模式 · 点击小球展开应用")
+
+    def exit_float_mode(self) -> None:
+        if not self._float_mode:
+            return
+        self.state.float_ball_pos = list(self.float_controller.ball_pos())
+        self.float_controller.hide()
+        self._float_mode = False
+        self.show()
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.persist()
+        self.console.log("[悬浮球] 已返回主窗口")
+
+    def toggle_float_mode(self) -> None:
+        if self._float_mode:
+            self.exit_float_mode()
+        else:
+            self.enter_float_mode()
 
     # ---------- 主题 ----------
     def set_theme(self, value: str) -> None:
@@ -315,6 +362,7 @@ class MainWindow(QMainWindow):
         self.input_panel.retheme()
         self.device_panel.set_devices(self.devices, self.current_serial)
         self.app_panel.refresh()
+        self.float_controller.apply_theme()
 
     # ---------- 信号 ----------
     def _wire(self) -> None:
@@ -338,6 +386,14 @@ class MainWindow(QMainWindow):
         self.app_panel.recategory_requested.connect(self.recategorize)
         self.app_panel.category_changed.connect(lambda k: self._set_state(category=k))
         self.app_panel.more_requested.connect(self._show_more_menu)
+        self.app_panel.apps_changed.connect(self.float_controller.set_apps)
+
+        self.float_controller.launch_requested.connect(self.launch_app)
+        self.float_controller.main_window_requested.connect(self.exit_float_mode)
+        self.float_controller.exit_requested.connect(self.exit_float_mode)
+        self.float_controller.settings_requested.connect(self.open_settings)
+        self.float_controller.reload_requested.connect(lambda: self.load_apps(force=True))
+        self.float_controller.quit_requested.connect(self.close)
 
         self.input_panel.send_requested.connect(self.send_text)
         self.input_panel.copy_requested.connect(self.copy_text)
@@ -379,6 +435,10 @@ class MainWindow(QMainWindow):
             )
         for seq in ("Ctrl+Comma", "Meta+Comma"):
             QShortcut(QKeySequence(seq), self).activated.connect(self.open_settings)
+        for seq in ("Ctrl+Shift+F", "Meta+Shift+F"):
+            QShortcut(QKeySequence(seq), self).activated.connect(
+                self.toggle_float_mode
+            )
         QShortcut(QKeySequence("Escape"), self).activated.connect(self._on_escape)
 
     def _on_escape(self) -> None:
@@ -405,6 +465,7 @@ class MainWindow(QMainWindow):
             self.state.prefer_usb = dialog.prefer_usb_value()
             self.state.auto_mirror_usb = dialog.auto_mirror_value()
             self.state.usb_port = dialog.usb_port_value()
+            self.state.auto_float_on_connect = dialog.auto_float_value()
             self.state.adb_path = dialog.adb_path_value()
             self.state.scrcpy_path = dialog.scrcpy_path_value()
             paths.set_overrides(self.state.adb_path, self.state.scrcpy_path)
@@ -439,6 +500,11 @@ class MainWindow(QMainWindow):
             self._update_status()
             if not silent:
                 self.console.log(f"发现 {len(devices)} 台设备")
+
+            had_online, self._had_online = self._had_online, bool(online)
+            if online and not had_online and self.state.auto_float_on_connect \
+                    and not self._float_mode:
+                QTimer.singleShot(700, self.enter_float_mode)
 
             pending, self._pending_auto_mirror = self._pending_auto_mirror, ""
             if pending and pending in serials and not self.processes \
@@ -501,6 +567,7 @@ class MainWindow(QMainWindow):
         self.persist()
         self.input_panel.set_serial(serial)
         self.app_panel.set_device_label(serial.split(":")[0])
+        self.float_controller.set_device_label(serial.split(":")[0])
         self.load_apps()
         self.load_device_info(serial)
 
@@ -512,6 +579,7 @@ class MainWindow(QMainWindow):
             if info.model:
                 parts.append(f"<b>{info.model}</b>")
                 self.app_panel.set_device_label(info.model)
+                self.float_controller.set_device_label(info.model)
             meta = []
             if info.android:
                 meta.append(f"Android {info.android}")
@@ -918,6 +986,8 @@ class MainWindow(QMainWindow):
     def persist(self) -> None:
         self.state.input_visible = self.input_panel.is_expanded()
         self.state.console_visible = self.console.output.isVisible()
+        if self._float_mode:
+            self.state.float_ball_pos = list(self.float_controller.ball_pos())
         save_state(self.state)
 
     def closeEvent(self, event) -> None:  # noqa: N802
@@ -925,9 +995,13 @@ class MainWindow(QMainWindow):
         self._info_timer.stop()
         self.timer.stop()
         self.watcher.stop()
+        if self._float_mode:
+            self.state.float_ball_pos = list(self.float_controller.ball_pos())
+        self.float_controller.hide()
         self.persist()
         for window in self.processes.values():
             if window.proc.state() != QProcess.NotRunning:
                 window.proc.terminate()
         self._info_pool.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(event)
+        QApplication.instance().quit()

@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-0.3.1}"
+VERSION="${VERSION:-0.4.0}"
 ARCH="$(uname -m)"
 NAME="ScrcpyStudio-${VERSION}-macOS-${ARCH}"
 PYROOT="${PYROOT:-$(awk -F' = ' '/^home /{print $2}' "$ROOT/.venv/pyvenv.cfg" | sed 's|/bin$||')}"
@@ -33,11 +33,15 @@ exec "$RES/runtime/bin/python3.13" "$RES/app/app.py" "$@"
 LAUNCH
 chmod +x "$APP/Contents/MacOS/ScrcpyStudio"
 
-echo "==> [2/6] 应用源码"
-mkdir -p "$RES/app"
+echo "==> [2/6] 应用源码、图标与守护脚本"
+mkdir -p "$RES/app" "$RES/app/resources" "$RES/app/scripts"
 for item in app.py core ui requirements.txt; do
     cp -R "$ROOT/$item" "$RES/app/"
 done
+cp "$ROOT/resources/AppIcon.png" "$RES/app/resources/AppIcon.png"
+cp "$ROOT/resources/AppIcon.icns" "$RES/AppIcon.icns"
+cp "$ROOT/scripts/usb_watch.sh" "$RES/app/scripts/usb_watch.sh"
+chmod +x "$RES/app/scripts/usb_watch.sh"
 find "$RES/app" -name "__pycache__" -type d -prune -exec rm -rf {} +
 find "$RES/app" -name "*.pyc" -delete
 

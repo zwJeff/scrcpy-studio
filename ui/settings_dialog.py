@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit,
-    QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget, QCheckBox,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
-from core import paths
+from core import paths, usbautostart
 from core.config import AppState, MirrorConfig
 
 from . import style
@@ -19,6 +20,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, parent: QWidget | None, state: AppState):
         super().__init__(parent)
+        self._state = state
         self.setWindowTitle("设置")
         self.resize(520, 600)
         self.setMinimumWidth(480)
@@ -107,6 +109,10 @@ class SettingsDialog(QDialog):
         self.auto_mirror.setChecked(state.auto_mirror_usb)
         form.addRow("", self.auto_mirror)
 
+        self.auto_float = QCheckBox("连接设备后自动进入悬浮球模式")
+        self.auto_float.setChecked(state.auto_float_on_connect)
+        form.addRow("", self.auto_float)
+
         self.usb_port = QSpinBox()
         self.usb_port.setRange(1, 65535)
         self.usb_port.setValue(state.usb_port)
@@ -133,9 +139,25 @@ class SettingsDialog(QDialog):
         lay.addWidget(detect)
         self._refresh_env_label()
 
+        lay.addWidget(self._hline())
+        auto_row = QHBoxLayout()
+        auto_row.setSpacing(10)
+        self.usb_autostart_btn = QPushButton()
+        self.usb_autostart_btn.setFixedHeight(28)
+        self.usb_autostart_btn.clicked.connect(self._toggle_usb_autostart)
+        auto_row.addWidget(self.usb_autostart_btn)
+        self.usb_autostart_label = QLabel("")
+        self.usb_autostart_label.setObjectName("Hint")
+        self.usb_autostart_label.setWordWrap(True)
+        auto_row.addWidget(self.usb_autostart_label, 1)
+        lay.addLayout(auto_row)
+        self._refresh_usb_label()
+
         hint = QLabel(
             "从 Finder 双击启动时 PATH 很短，程序会自动把 adb 绝对路径传给 scrcpy；"
             "若仍报找不到 adb，在这里手动填写完整路径。\n"
+            "「插 USB 自动启动」会安装一个登录时常驻、每 3 秒检查一次的后台守护，"
+            "用于 App 未运行时也能被 USB 插入唤醒。\n"
             "无线调试开关需要在手机上手动打开，手机重启后会关闭。"
         )
         hint.setObjectName("Hint")
@@ -143,6 +165,41 @@ class SettingsDialog(QDialog):
         lay.addWidget(hint)
         lay.addStretch(1)
         return page
+
+    @staticmethod
+    def _hline() -> QFrame:
+        line = QFrame()
+        line.setObjectName("GlassDivider")
+        line.setFixedHeight(1)
+        return line
+
+    def _refresh_usb_label(self) -> None:
+        installed = usbautostart.is_installed()
+        self.usb_autostart_btn.setText("停用插 USB 自动启动" if installed
+                                       else "启用插 USB 自动启动…")
+        self.usb_autostart_label.setText(
+            "已启用：守护运行中，插入 USB 会唤醒 App"
+            if installed else "未启用：App 未运行时插入 USB 不会自动打开"
+        )
+        self._state.usb_autostart = installed
+
+    def _toggle_usb_autostart(self) -> None:
+        if usbautostart.is_installed():
+            ok, message = usbautostart.uninstall()
+        else:
+            answer = QMessageBox.question(
+                self, "启用插 USB 自动启动",
+                "这会在 ~/Library/LaunchAgents/ 安装一个登录时自动运行的后台守护，\n"
+                "每 3 秒检查一次 USB 设备；检测到 Android 设备插入时打开 Scrcpy Studio。\n\n"
+                "守护由 macOS 的 launchd 管理，可随时在这里停用。是否继续？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+            ok, message = usbautostart.install()
+        self._refresh_usb_label()
+        if not ok:
+            QMessageBox.warning(self, "操作未完成", message)
 
     def _refresh_env_label(self) -> None:
         paths.scrcpy_version.cache_clear()
@@ -162,6 +219,7 @@ class SettingsDialog(QDialog):
         self.columns.setValue(0)
         self.prefer_usb.setChecked(True)
         self.auto_mirror.setChecked(False)
+        self.auto_float.setChecked(False)
         self.usb_port.setValue(5555)
         self.adb_path.clear()
         self.scrcpy_path.clear()
@@ -183,6 +241,9 @@ class SettingsDialog(QDialog):
 
     def auto_mirror_value(self) -> bool:
         return self.auto_mirror.isChecked()
+
+    def auto_float_value(self) -> bool:
+        return self.auto_float.isChecked()
 
     def usb_port_value(self) -> int:
         return self.usb_port.value()

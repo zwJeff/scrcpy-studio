@@ -9,6 +9,8 @@ from functools import lru_cache
 from pathlib import Path
 
 HOME = Path.home()
+ROOT = Path(__file__).resolve().parent.parent
+ICON_PNG = ROOT / "resources" / "AppIcon.png"
 
 
 def _first_existing(candidates: list[Path]) -> str | None:

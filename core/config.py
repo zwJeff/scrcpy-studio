@@ -138,6 +138,11 @@ class AppState:
     console_visible: bool = False
     input_visible: bool = True
 
+    # 悬浮球
+    auto_float_on_connect: bool = False   # 设备上线后自动进入悬浮球模式
+    float_ball_pos: list[int] = field(default_factory=list)
+    usb_autostart: bool = False           # 是否已启用「插 USB 自动启动 App」守护
+
     # USB 连接
     auto_mirror_usb: bool = False         # 插入 USB 设备后自动整屏投屏
     prefer_usb: bool = True               # USB 与无线同时在线时优先选 USB
@@ -187,6 +192,10 @@ def load_state() -> AppState:
         state.input_visible = True
         state.console_visible = False
         state.launchpad_columns = 0
+    state.auto_float_on_connect = bool(raw.get("auto_float_on_connect", False))
+    pos = raw.get("float_ball_pos") or []
+    state.float_ball_pos = [int(v) for v in pos[:2]] if len(pos) >= 2 else []
+    state.usb_autostart = bool(raw.get("usb_autostart", False))
     state.auto_mirror_usb = bool(raw.get("auto_mirror_usb", False))
     state.prefer_usb = bool(raw.get("prefer_usb", True))
     try:
@@ -222,6 +231,9 @@ def save_state(state: AppState) -> None:
         "launchpad_columns": state.launchpad_columns,
         "console_visible": state.console_visible,
         "input_visible": state.input_visible,
+        "auto_float_on_connect": state.auto_float_on_connect,
+        "float_ball_pos": state.float_ball_pos,
+        "usb_autostart": state.usb_autostart,
         "auto_mirror_usb": state.auto_mirror_usb,
         "prefer_usb": state.prefer_usb,
         "usb_port": state.usb_port,

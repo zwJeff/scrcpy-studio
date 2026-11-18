@@ -337,6 +337,7 @@ class AppPanel(Card):
     view_changed = Signal(str)
     group_changed = Signal(bool)
     more_requested = Signal(QPoint)
+    apps_changed = Signal(object)
 
     def __init__(self):
         super().__init__("应用")
@@ -353,6 +354,7 @@ class AppPanel(Card):
         self._group_by = True
         self._keyword = ""
         self._all: list[AppData] = []
+        self._last_sig: tuple = ()
         self._running: set[str] = set()
         self._count_text = "—"
         self._progress_text = ""
@@ -510,6 +512,17 @@ class AppPanel(Card):
         else:
             self._fill_list(visible)
             self.stack.setCurrentWidget(self.list)
+        self._notify_apps()
+
+    def _notify_apps(self) -> None:
+        """只在应用数据真正变化时通知悬浮球面板，避免搜索时反复重建网格。"""
+        sig = tuple((a.package, a.name, a.icon, a.category) for a in self._all)
+        if sig != self._last_sig:
+            self._last_sig = sig
+            self.apps_changed.emit(list(self._all))
+
+    def all_apps(self) -> list[AppData]:
+        return list(self._all)
 
     def _fill_list(self, apps: list[AppData]) -> None:
         self.list.setUpdatesEnabled(False)
