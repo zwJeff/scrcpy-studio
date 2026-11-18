@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QSpinBox,
-    QTabWidget, QVBoxLayout, QWidget, QCheckBox,
+    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit,
+    QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget, QCheckBox,
 )
 
+from core import paths
 from core.config import AppState, MirrorConfig
 
 from . import style
@@ -31,6 +32,7 @@ class SettingsDialog(QDialog):
         outer.addWidget(title)
 
         tabs = QTabWidget()
+        self.tabs = tabs
         self.form = SettingsPanel()
         self.form.set_config(state.mirror)
         tabs.addTab(self.form, "投屏参数")
@@ -109,22 +111,61 @@ class SettingsDialog(QDialog):
         self.usb_port.setRange(1, 65535)
         self.usb_port.setValue(state.usb_port)
         form.addRow("USB → 无线端口", self.usb_port)
+
+        self.adb_path = QLineEdit(state.adb_path)
+        self.adb_path.setPlaceholderText("留空自动查找（PATH / ~/.local/opt / Homebrew）")
+        form.addRow("adb 路径", self.adb_path)
+
+        self.scrcpy_path = QLineEdit(state.scrcpy_path)
+        self.scrcpy_path.setPlaceholderText("留空自动查找；单应用投屏需 scrcpy 5.x")
+        form.addRow("scrcpy 路径", self.scrcpy_path)
         lay.addLayout(form)
 
-        hint = QLabel("无线调试开关需要在手机上手动打开；手机重启后该开关会关闭。")
+        self.env_label = QLabel("")
+        self.env_label.setObjectName("MonoHint")
+        self.env_label.setWordWrap(True)
+        self.env_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.env_label)
+
+        detect = QPushButton("重新检测")
+        detect.setFixedHeight(26)
+        detect.clicked.connect(self._refresh_env_label)
+        lay.addWidget(detect)
+        self._refresh_env_label()
+
+        hint = QLabel(
+            "从 Finder 双击启动时 PATH 很短，程序会自动把 adb 绝对路径传给 scrcpy；"
+            "若仍报找不到 adb，在这里手动填写完整路径。\n"
+            "无线调试开关需要在手机上手动打开，手机重启后会关闭。"
+        )
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         lay.addWidget(hint)
         lay.addStretch(1)
         return page
 
+    def _refresh_env_label(self) -> None:
+        paths.scrcpy_version.cache_clear()
+        adb_path = paths.resolve_adb(self.adb_path.text())
+        scrcpy_path = paths.resolve_scrcpy(self.scrcpy_path.text())
+        version = paths.scrcpy_version(self.scrcpy_path.text())
+        lines = [f"adb    → {adb_path}",
+                 f"scrcpy → {scrcpy_path}",
+                 f"版本   → {paths.version_text(self.scrcpy_path.text())}"]
+        if version and version[0] < 5:
+            lines.append("⚠ 当前 scrcpy < 5.0，单应用投屏将降级为整屏模式")
+        self.env_label.setText("\n".join(lines))
+
     def _restore_defaults(self) -> None:
         self.form.set_config(MirrorConfig())
         self.theme_combo.setCurrentIndex(0)
-        self.columns.setValue(7)
+        self.columns.setValue(0)
         self.prefer_usb.setChecked(True)
         self.auto_mirror.setChecked(False)
         self.usb_port.setValue(5555)
+        self.adb_path.clear()
+        self.scrcpy_path.clear()
+        self._refresh_env_label()
         self.theme_changed.emit("auto")
 
     # ---------- 读取结果 ----------
@@ -145,3 +186,9 @@ class SettingsDialog(QDialog):
 
     def usb_port_value(self) -> int:
         return self.usb_port.value()
+
+    def adb_path_value(self) -> str:
+        return self.adb_path.text().strip()
+
+    def scrcpy_path_value(self) -> str:
+        return self.scrcpy_path.text().strip()

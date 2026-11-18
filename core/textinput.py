@@ -17,7 +17,7 @@ import shlex
 import subprocess
 from dataclasses import dataclass
 
-from .paths import ADB
+from . import paths
 
 ADBKEYBOARD_IME = "com.android.adbkeyboard/.AdbIME"
 
@@ -41,11 +41,11 @@ class SendResult:
 def _shell(serial: str, command: str, timeout: int = 25) -> str:
     try:
         proc = subprocess.run(
-            [ADB, "-s", serial, "shell", command],
+            [paths.ADB, "-s", serial, "shell", command],
             capture_output=True, text=True, timeout=timeout,
         )
     except FileNotFoundError as exc:
-        raise TextInputError(f"找不到 adb：{ADB}") from exc
+        raise TextInputError(f"找不到 adb：{paths.ADB}") from exc
     except subprocess.TimeoutExpired as exc:
         raise TextInputError("adb 命令超时") from exc
     return ((proc.stdout or "") + (proc.stderr or "")).strip()

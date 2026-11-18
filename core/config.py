@@ -6,7 +6,7 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from .paths import SCRCPY
+from . import paths
 
 CONFIG_DIR = Path.home() / "Library/Application Support/ScrcpyStudio"
 CONFIG_PATH = CONFIG_DIR / "config.json"
@@ -50,7 +50,7 @@ class MirrorConfig:
 
 
 def build_args(cfg: MirrorConfig, serial: str | None, scrcpy_path: str | None = None) -> list[str]:
-    scrcpy = scrcpy_path or SCRCPY
+    scrcpy = paths.resolve_scrcpy(scrcpy_path)
     args: list[str] = [scrcpy]
     if serial:
         args += ["-s", serial]

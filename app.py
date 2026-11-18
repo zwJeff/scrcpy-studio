@@ -19,7 +19,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Scrcpy Studio")
     app.setApplicationDisplayName("Scrcpy Studio")
-    app.setApplicationVersion("0.3.0")
+    app.setApplicationVersion("0.3.1")
     font = QFont("PingFang SC")
     font.setPixelSize(13)
     app.setFont(font)

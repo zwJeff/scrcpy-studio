@@ -5,7 +5,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 
-from .paths import ADB
+from . import paths
 
 
 class AdbError(RuntimeError):
@@ -13,7 +13,7 @@ class AdbError(RuntimeError):
 
 
 def run(args: list[str], timeout: int = 25, serial: str | None = None) -> str:
-    cmd = [ADB]
+    cmd = [paths.ADB]
     if serial:
         cmd += ["-s", serial]
     cmd += args
@@ -23,7 +23,7 @@ def run(args: list[str], timeout: int = 25, serial: str | None = None) -> str:
             env={**__import__("os").environ, "LC_ALL": "C"},
         )
     except FileNotFoundError as exc:
-        raise AdbError(f"找不到 adb：{ADB}") from exc
+        raise AdbError(f"找不到 adb：{paths.ADB}") from exc
     except subprocess.TimeoutExpired as exc:
         raise AdbError(f"adb 命令超时：{' '.join(args)}") from exc
     out = (proc.stdout or "") + (proc.stderr or "")

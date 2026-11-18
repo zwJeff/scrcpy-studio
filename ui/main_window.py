@@ -7,7 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from PySide6.QtCore import QProcess, Qt, QTimer, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor, QFont, QGuiApplication, QIcon, QKeySequence, QPainter,
     QPixmap, QShortcut,
@@ -17,10 +17,9 @@ from PySide6.QtWidgets import (
     QMainWindow, QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
-from core import adb, apkinfo, textinput
+from core import adb, apkinfo, paths, textinput
 from core.aliases import display_name
 from core.config import build_args, load_state, save_state
-from core.paths import ADB, SCRCPY
 from core.tasks import run_async
 from core.usbwatch import DeviceWatcher
 
@@ -80,6 +79,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1080, 720)
 
         self.state = load_state()
+        paths.set_overrides(self.state.adb_path, self.state.scrcpy_path)
         self.devices: list[adb.Device] = []
         self.app_cache: dict[str, list[tuple[str, str]]] = {}
         self.system_cache: dict[str, set[str]] = {}
@@ -159,8 +159,16 @@ class MainWindow(QMainWindow):
 
         self.watcher.start()
         self.refresh_devices()
-        self.console.log(f"adb     → {ADB}")
-        self.console.log(f"scrcpy  → {SCRCPY}")
+        self.console.log(f"adb     → {paths.ADB}")
+        version = paths.scrcpy_version(self.state.scrcpy_path)
+        self.console.log(
+            f"scrcpy  → {paths.SCRCPY}  ({paths.version_text(self.state.scrcpy_path)})"
+        )
+        if version and version[0] < 5:
+            self.console.log(
+                "[兼容提示] 当前 scrcpy < 5.0：单应用投屏会降级为「整屏 + 在手机上启动应用」，"
+                "升级到 5.x 可恢复独立窗口与多窗口投屏"
+            )
 
     # ---------- 工具栏 ----------
     def _build_toolbar(self) -> QWidget:
@@ -276,7 +284,7 @@ class MainWindow(QMainWindow):
     def _about(self) -> None:
         QMessageBox.about(
             self, "关于 Scrcpy Studio",
-            "Scrcpy Studio 0.3.0\n\n"
+            "Scrcpy Studio 0.3.1\n\n"
             "macOS 桌面投屏工作台：USB / 无线设备管理、真实应用图标、"
             "应用分类、设备文本输入，以及多窗口单应用投屏。\n\n"
             "基于 scrcpy 5.x 与 adb。",
@@ -397,14 +405,20 @@ class MainWindow(QMainWindow):
             self.state.prefer_usb = dialog.prefer_usb_value()
             self.state.auto_mirror_usb = dialog.auto_mirror_value()
             self.state.usb_port = dialog.usb_port_value()
+            self.state.adb_path = dialog.adb_path_value()
+            self.state.scrcpy_path = dialog.scrcpy_path_value()
+            paths.set_overrides(self.state.adb_path, self.state.scrcpy_path)
             self.device_panel.set_auto_mirror(self.state.auto_mirror_usb)
             self.app_panel.set_columns(self.state.launchpad_columns)
             style.apply(QApplication.instance(), self.state.theme)
             self._sync_theme_button()
             self._refresh_dynamic()
             self.persist()
-            self.console.log("设置已保存")
+            self.console.log(
+                f"设置已保存 · adb → {paths.ADB} · scrcpy → {paths.SCRCPY}"
+            )
         else:
+            paths.set_overrides(self.state.adb_path, self.state.scrcpy_path)
             style.apply(QApplication.instance(), self.state.theme)
             self._sync_theme_button()
             self._refresh_dynamic()
@@ -791,6 +805,23 @@ class MainWindow(QMainWindow):
                                     "请先用 USB 连接或在「无线连接」里连上手机。")
             return
 
+        # scrcpy < 5.0 没有 --new-display / --start-app：降级为整屏 + 设备端启动应用
+        if package and not paths.supports_new_display(self.state.scrcpy_path):
+            answer = QMessageBox.question(
+                self, "scrcpy 版本过旧",
+                f"检测到 {paths.version_text(self.state.scrcpy_path)}，"
+                "单应用投屏（--new-display / --start-app）需要 scrcpy 5.0 或更高版本。\n\n"
+                "是否改为「整屏投屏 + 在手机上打开该应用」？\n"
+                "升级到 5.x 后可恢复独立窗口与多窗口同时投屏。",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            )
+            if answer != QMessageBox.Yes:
+                self.console.log("[已取消] 请升级 scrcpy 到 5.x 后重试")
+                return
+            self._launch_on_device(serial, package)
+            self.console.log(f"[兼容模式] {package} → 整屏投屏 + 设备端启动应用")
+            package = None
+
         cfg = self.state.mirror.copy()
         if package:
             cfg.mode = "app"
@@ -814,6 +845,13 @@ class MainWindow(QMainWindow):
 
         window_id = uuid.uuid4().hex[:8]
         proc = QProcess(self)
+        # Finder 启动的 .app 只有最小 PATH，必须显式把 adb 绝对路径交给 scrcpy
+        child = paths.child_environment(self.state.adb_path, self.state.scrcpy_path)
+        env = QProcessEnvironment.systemEnvironment()
+        for key, value in child.items():
+            env.insert(key, value)
+        proc.setProcessEnvironment(env)
+        self.console.log(f"[环境] ADB={child['ADB']}（已注入 scrcpy 子进程）")
         proc.setProcessChannelMode(QProcess.MergedChannels)
         proc.readyReadStandardOutput.connect(lambda: self._drain(proc))
         proc.finished.connect(lambda *_: self._on_finished(window_id))
@@ -825,6 +863,23 @@ class MainWindow(QMainWindow):
                                                   serial, proc)
         self.console.log(f"投屏窗口 {window_id} → {label}（可继续打开其他应用）")
         self._refresh_mirror_ui()
+
+    def _launch_on_device(self, serial: str, package: str) -> None:
+        """旧版 scrcpy 的降级路径：在手机上把应用拉到前台，再整屏投屏。"""
+        activity = ""
+        for pkg, act in self.app_cache.get(serial, []):
+            if pkg == package:
+                activity = act
+                break
+        if activity and "/" in activity:
+            cmd = ["shell", "am", "start", "-n", activity]
+        else:
+            cmd = ["shell", "monkey", "-p", package,
+                   "-c", "android.intent.category.LAUNCHER", "1"]
+        run_async(adb.run,
+                  lambda _out: self.console.log(f"[兼容模式] 已启动 {package}"),
+                  lambda m: self.console.log(f"[兼容模式] 启动应用失败：{m}"),
+                  cmd, 15, serial)
 
     def _drain(self, proc: QProcess) -> None:
         data = bytes(proc.readAllStandardOutput()).decode("utf-8", "replace")

@@ -23,7 +23,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .paths import ADB
+from . import paths
 
 CACHE_DIR = Path.home() / "Library/Application Support/ScrcpyStudio/appinfo"
 ICON_DIR = CACHE_DIR / "icons"
@@ -102,7 +102,7 @@ def cache_size() -> int:
 def _binary(args: list[str], timeout: int = 90) -> bytes:
     """adb 输出二进制时不能用 adb.run()（它会按文本解码）。"""
     try:
-        proc = subprocess.run([ADB, *args], capture_output=True, timeout=timeout)
+        proc = subprocess.run([paths.ADB, *args], capture_output=True, timeout=timeout)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return b""
     if proc.returncode != 0:
@@ -113,7 +113,7 @@ def _binary(args: list[str], timeout: int = 90) -> bytes:
 def _shell_text(serial: str, command: str, timeout: int = 25) -> str:
     try:
         proc = subprocess.run(
-            [ADB, "-s", serial, "shell", command],
+            [paths.ADB, "-s", serial, "shell", command],
             capture_output=True, text=True, timeout=timeout,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -223,7 +223,7 @@ def _full_fetch(serial: str, path: str, key: str) -> tuple[str, bytes] | None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     try:
         proc = subprocess.run(
-            [ADB, "-s", serial, "pull", path, str(tmp)],
+            [paths.ADB, "-s", serial, "pull", path, str(tmp)],
             capture_output=True, timeout=180,
         )
         if proc.returncode != 0 or not tmp.exists():

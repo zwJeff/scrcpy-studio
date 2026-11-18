@@ -14,7 +14,7 @@ import threading
 
 from PySide6.QtCore import QObject, Signal
 
-from .paths import ADB
+from . import paths
 
 
 class DeviceWatcher(QObject):
@@ -55,7 +55,7 @@ class DeviceWatcher(QObject):
         while not self._stop_event.is_set():
             try:
                 proc = subprocess.Popen(
-                    [ADB, "track-devices"],
+                    [paths.ADB, "track-devices"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     bufsize=0,

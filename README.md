@@ -12,6 +12,8 @@ macOS 桌面投屏工作台：集中管理 adb / scrcpy，用 **macOS Launchpad 
 
 ![设置对话框](screenshot-settings-dark.png)
 
+![环境自检（设置 → 设备连接）](screenshot-settings-tab2-dark.png)
+
 ![USB 连接向导](screenshot-usb.png)
 
 ![空状态](screenshot.png)
@@ -26,14 +28,14 @@ macOS 桌面投屏工作台：集中管理 adb / scrcpy，用 **macOS Launchpad 
 
 | 产物 | 体积 | 说明 |
 |---|---|---|
-| [ScrcpyStudio-0.3.0-macOS-arm64.app.zip](dist/ScrcpyStudio-0.3.0-macOS-arm64.app.zip) | 约 56 MB | **解压即用**，Apple Silicon / macOS 12+ |
-| [ScrcpyStudio-0.3.0-macOS-arm64-source.tar.gz](dist/ScrcpyStudio-0.3.0-macOS-arm64-source.tar.gz) | 约 1.6 MB | 源码快照（含界面预览图），按下方「环境准备」安装 |
-| [app.zip.sha256](dist/ScrcpyStudio-0.3.0-macOS-arm64.app.zip.sha256) · [source.tar.gz.sha256](dist/ScrcpyStudio-0.3.0-macOS-arm64-source.tar.gz.sha256) | — | 校验文件 |
+| [ScrcpyStudio-0.3.1-macOS-arm64.app.zip](dist/ScrcpyStudio-0.3.1-macOS-arm64.app.zip) | 约 56 MB | **解压即用**，Apple Silicon / macOS 12+ |
+| [ScrcpyStudio-0.3.1-macOS-arm64-source.tar.gz](dist/ScrcpyStudio-0.3.1-macOS-arm64-source.tar.gz) | 约 1.6 MB | 源码快照（含界面预览图），按下方「环境准备」安装 |
+| [app.zip.sha256](dist/ScrcpyStudio-0.3.1-macOS-arm64.app.zip.sha256) · [source.tar.gz.sha256](dist/ScrcpyStudio-0.3.1-macOS-arm64-source.tar.gz.sha256) | — | 校验文件 |
 
 ```bash
 # 校验下载完整性
-shasum -a 256 -c ScrcpyStudio-0.3.0-macOS-arm64.app.zip.sha256
-# SHA256: bf9fa80328a25fdb3b49ed45f9463476c56e572d002ecbe2e144ec5cf3925913
+shasum -a 256 -c ScrcpyStudio-0.3.1-macOS-arm64.app.zip.sha256
+# SHA256: e7dbfdb9c4d33b823cfbe6d3894931f2f69af647a18e054a060f54f4ac621164
 ```
 
 首次打开若被 Gatekeeper 拦截（未做正式 Apple 签名，只有 ad-hoc 签名）：
@@ -167,6 +169,46 @@ macOS 12+ / Apple Silicon 与 Intel 均可。
 ```bash
 open ScrcpyStudio.app   # 或双击（源码目录里的应用壳）
 ./run.sh                # 命令行
+```
+
+## 故障排查
+
+### `ERROR: Could not execute "adb start-server"`
+
+现象：设备和应用列表都能正常读出来，但一点投屏就立刻退出，日志出现：
+
+```
+ERROR: (make 'adb' accessible from your PATH or define its fullpath in the ADB environment variable)
+ERROR: Could not execute "adb start-server"
+ERROR: Could not start adb server
+ERROR: Server connection failed
+```
+
+原因：从 Finder 双击 `.app` 时，进程只继承 launchd 的最小 `PATH`，不包含 `~/.local/bin`
+或 Homebrew 路径。程序自身用**绝对路径**调用 adb（所以设备与应用列表正常），
+但 scrcpy 是独立子进程，会在自己的 PATH 里找 adb，于是启动失败。
+
+**0.3.1 起已修复**：启动 scrcpy 时自动注入 `ADB=<adb 绝对路径>`（scrcpy 官方支持的环境变量），
+把 adb / scrcpy 所在目录补进子进程 PATH，并在需要时指定 `SCRCPY_SERVER_PATH`。
+
+若仍然失败，到 **设置 → 设备连接** 手动填写 adb / scrcpy 的完整路径（留空为自动查找），
+点「重新检测」能看到程序实际解析到的路径与版本：
+
+```bash
+which adb          # 例如 ~/.local/bin/adb
+scrcpy --version   # 例如 scrcpy 5.0.1
+```
+
+### 单应用投屏失败 / 提示版本过旧
+
+`--new-display` 与 `--start-app` 是 **scrcpy 5.0** 才加入的。检测到 4.x（如 `scrcpy 4.1`）时，
+双击应用图标会询问是否降级为「整屏投屏 + 在手机上启动该应用」；
+升级到 5.x 后即可恢复独立窗口与多窗口同时投屏。启动日志与设置页都会显示检测到的版本。
+
+```bash
+scrcpy --version                      # 先确认版本
+brew upgrade scrcpy                   # Homebrew 版本可能停留在 4.x
+# 或下载官方 macOS 预编译包，解压到 ~/.local/opt/scrcpy/（程序会自动查找）
 ```
 
 ## 已知限制

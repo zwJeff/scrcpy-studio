@@ -18,6 +18,7 @@ from ui import style  # noqa: E402
 from ui.settings_dialog import SettingsDialog  # noqa: E402
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "dark"
+TAB = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 
 
 def main() -> int:
@@ -29,9 +30,13 @@ def main() -> int:
 
     dialog = SettingsDialog(None, load_state())
     dialog.resize(520, 600)
+    dialog.tabs.setCurrentIndex(TAB)
     dialog.show()
 
-    target = ROOT / f"screenshot-settings-{MODE}.png"
+    target = ROOT / (
+        f"screenshot-settings-{MODE}.png" if TAB == 0
+        else f"screenshot-settings-tab{TAB}-{MODE}.png"
+    )
 
     def capture() -> None:
         dialog.grab().save(str(target))
