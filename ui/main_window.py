@@ -96,12 +96,14 @@ class MainWindow(QMainWindow):
         self._prev_usb: set[str] = set()
         self._watcher_seeded = False
         self._pending_auto_mirror = ""
+        self._apps_loading: set[str] = set()      # 防止并行重复提交读取任务
+        self._apps_retry: dict[str, int] = {}      # 设备刚上线时的空结果重试计数
         self.watcher = DeviceWatcher(self)
         self.watcher.devices_changed.connect(self.on_device_event)
         self.watcher.watcher_error.connect(lambda m: self.console.log(f"[设备监视] {m}"))
 
         # APK 名称 / 图标提取
-        self._info_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="appinfo")
+        self._info_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="appinfo")
         self._info_lock = threading.Lock()
         self._info_pending: dict[str, apkinfo.AppInfo] = {}
         self._info_token = 0
@@ -255,8 +257,9 @@ class MainWindow(QMainWindow):
 
     def _show_more_menu(self, pos) -> None:
         menu = QMenu(self)
-        menu.addAction("重新读取应用", lambda: self.load_apps(force=True))
-        menu.addAction("重载应用图标", lambda: self.load_appinfo(force=True))
+        menu.addAction("重新读取应用列表", lambda: self.load_apps(force=True))
+        menu.addAction("重新提取名称与图标（较慢）",
+                       lambda: self.load_appinfo(force=True))
         menu.addAction("整屏投屏", lambda: self.start_mirror())
         menu.addAction("进入悬浮球模式", self.enter_float_mode)
         menu.addSeparator()
@@ -298,7 +301,7 @@ class MainWindow(QMainWindow):
     def _about(self) -> None:
         QMessageBox.about(
             self, "关于 Scrcpy Studio",
-            "Scrcpy Studio 0.4.0\n\n"
+            "Scrcpy Studio 0.4.1\n\n"
             "macOS 桌面投屏工作台：USB / 无线设备管理、真实应用图标、"
             "应用分类、设备文本输入、多窗口单应用投屏与悬浮球模式。\n\n"
             "基于 scrcpy 5.x 与 adb。",
@@ -490,6 +493,7 @@ class MainWindow(QMainWindow):
             self.devices = devices
             online = [d for d in devices if d.online]
             serials = {d.serial for d in online}
+            previous_serial = self.current_serial
             target = self.current_serial or self.state.last_serial
             if self._pending_auto_mirror in serials:
                 target = self._pending_auto_mirror
@@ -500,6 +504,19 @@ class MainWindow(QMainWindow):
             self._update_status()
             if not silent:
                 self.console.log(f"发现 {len(devices)} 台设备")
+
+            # 首次连接时设备往往还没完成授权，list_apps 会返回空；
+            # 除自动重试外，每次轮询也补一次，避免空结果一直留在界面上。
+            if target and target in serials:
+                if target != self.current_serial:
+                    self.on_device_selected(target)   # 会顺带触发 load_apps
+                elif target == previous_serial \
+                        and not self.app_cache.get(target) \
+                        and target not in self._apps_loading \
+                        and self._apps_retry.get(target, 0) < 5:
+                    # 仅当设备本来就已选中时才补读，避免与 on_device_selected
+                    # 刚发出的那次请求重复
+                    self.load_apps(force=False)
 
             had_online, self._had_online = self._had_online, bool(online)
             if online and not had_online and self.state.auto_float_on_connect \
@@ -564,6 +581,7 @@ class MainWindow(QMainWindow):
             return
         self.current_serial = serial
         self.state.last_serial = serial
+        self._apps_retry.pop(serial, None)
         self.persist()
         self.input_panel.set_serial(serial)
         self.app_panel.set_device_label(serial.split(":")[0])
@@ -690,29 +708,49 @@ class MainWindow(QMainWindow):
         serial = self.current_serial
         if not serial:
             self.app_panel.set_data([], set(), self.state.aliases)
+            self.app_panel.set_progress("")
             return
-        if not force and serial in self.app_cache:
+        if serial in self._apps_loading:
+            return
+        if force:
+            self._apps_retry.pop(serial, None)
+        if not force and self.app_cache.get(serial):
             self.app_panel.set_data(self.app_cache[serial],
                                     self.system_cache.get(serial, set()),
                                     self.state.aliases)
             self._info_timer.start()
             return
 
+        self._apps_loading.add(serial)
         self.app_panel.set_progress("读取中…")
 
         def done(packages: list[tuple[str, str]]) -> None:
+            self._apps_loading.discard(serial)
             if serial != self.current_serial:
                 return
+            if not packages:
+                # 设备刚上线 / 未授权时 list_apps 常返回空。绝不缓存空列表，
+                # 否则后续轮询因 current_serial 未变就不会再读，界面一直空白。
+                self._schedule_retry(serial)
+                return
             self.app_cache[serial] = packages
+            self._apps_retry.pop(serial, None)
             self.app_panel.set_data(packages, self.system_cache.get(serial, set()),
                                     self.state.aliases)
             self.app_panel.set_progress("")
             self.console.log(f"读取到 {len(packages)} 个可投屏应用")
-            self.load_appinfo(force=force)
+            if self._float_mode:
+                self.float_controller.set_apps(self.app_panel.all_apps())
+            # 与 system_packages / device_info 错开，少抢一点 adb
+            QTimer.singleShot(300, lambda: self.load_appinfo(force=False))
 
         def fail(message: str) -> None:
-            self.app_panel.set_progress("读取失败")
+            self._apps_loading.discard(serial)
+            if serial != self.current_serial:
+                return
+            self.app_panel.set_progress("读取失败，重试中…")
             self.console.log(f"[错误] 读取应用列表：{message}")
+            self._schedule_retry(serial)
 
         run_async(adb.list_apps, done, fail, serial)
 
@@ -722,6 +760,25 @@ class MainWindow(QMainWindow):
                 self.app_panel.set_data(self.app_cache[serial], pkgs, self.state.aliases)
 
         run_async(adb.system_packages, system_done, lambda _m: None, serial)
+
+    def _schedule_retry(self, serial: str) -> None:
+        attempt = self._apps_retry.get(serial, 0) + 1
+        self._apps_retry[serial] = attempt
+        if attempt > 4:
+            self.app_panel.set_progress("未读取到应用 · 点「重新读取应用」重试")
+            return
+        self.app_panel.set_progress(f"等待设备就绪 · 第 {attempt} 次重试")
+        if attempt == 1:
+            self.console.log("[应用] 设备尚未就绪，正在自动重试读取应用列表…")
+        QTimer.singleShot((1200, 2200, 3500, 5000)[attempt - 1],
+                          lambda: self._retry_apps(serial))
+
+    def _retry_apps(self, serial: str) -> None:
+        if not serial or serial != self.current_serial:
+            return
+        if not any(d.serial == serial and d.online for d in self.devices):
+            return                       # 设备离线了，等下次轮询再补
+        self.load_apps(force=False)       # 空结果没写缓存，因此会真的重读
 
     def load_appinfo(self, force: bool = False) -> None:
         serial = self.current_serial
@@ -743,11 +800,16 @@ class MainWindow(QMainWindow):
             self.app_panel.set_appinfo(apkinfo.all_cached())
         self.app_panel.set_progress(f"提取 0/{self._info_total}")
 
-        def worker(package: str):
+        def worker(package: str, prefetched_path: str):
             if token != self._info_token:
                 return package, None
             try:
-                return package, apkinfo.fetch(serial, package, force=force)
+                return package, apkinfo.fetch(
+                    serial, package, force=force,
+                    prefetched_path=prefetched_path,
+                    # 常规加载不 pull 整包：设备没有 unzip 时这会拖垮界面
+                    allow_full=force,
+                )
             except Exception:  # noqa: BLE001
                 return package, None
 
@@ -758,8 +820,17 @@ class MainWindow(QMainWindow):
                 package, info = "", None
             self.info_ready.emit((token, package, info))
 
-        for package, _activity in packages:
-            self._info_pool.submit(worker, package).add_done_callback(submitted)
+        def start(paths: dict[str, str]) -> None:
+            if token != self._info_token or serial != self.current_serial:
+                return
+            for package, _activity in packages:
+                self._info_pool.submit(
+                    worker, package, paths.get(package, "")
+                ).add_done_callback(submitted)
+
+        # 一条 adb 批量拿全部 APK 路径，省掉每个应用一次 pm path 往返
+        run_async(lambda: apkinfo.prefetch_paths(serial), start,
+                  lambda _m: start({}))
 
     def _collect_info(self, payload) -> None:
         token, package, info = payload

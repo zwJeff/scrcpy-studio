@@ -19,7 +19,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Scrcpy Studio")
     app.setApplicationDisplayName("Scrcpy Studio")
-    app.setApplicationVersion("0.4.0")
+    app.setApplicationVersion("0.4.1")
     # 悬浮球模式下主窗口会隐藏，此时不能让 Qt 因为「最后一个窗口关闭」而退出
     app.setQuitOnLastWindowClosed(False)
     font = QFont("PingFang SC")

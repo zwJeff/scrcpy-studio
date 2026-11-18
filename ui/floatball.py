@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QObject, QPoint, QRectF, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor, QFont, QGuiApplication, QIcon, QPainter, QPainterPath, QPixmap,
 )
@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from core import paths
 from core.categories import CATEGORIES, label_of
 
-from . import style
+from . import nativewindow, style
 from .desktop import AppData
 from .launchpad import app_pixmap
 
@@ -196,6 +196,7 @@ class FloatPanel(QWidget):
         self._category = "all"
         self._device = ""
         self._icons: list[FloatAppIcon] = []
+        self._dirty = False          # 面板隐藏时只记数据，展开时再构建网格
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(22, 16, 22, 14)
@@ -353,14 +354,27 @@ class FloatPanel(QWidget):
         parts = [p for p in (self._device, f"{len(self._apps)} 个应用" if self._apps else "") if p]
         self.subtitle.setText(" · ".join(parts) if parts else "连接设备后显示应用")
 
-    def set_apps(self, apps: list[AppData]) -> None:
+    def set_apps(self, apps: list[AppData], *, defer_hidden: bool = True) -> None:
+        """面板不可见时只保存数据：避免后台每批图标结果都重建 50+ 个 widget。"""
         self._apps = list(apps)
         self._update_subtitle()
+        if defer_hidden and not self.isVisible():
+            self._dirty = True
+            return
+        self._dirty = False
         self._rebuild()
+
+    def ensure_built(self) -> None:
+        if self._dirty:
+            self._dirty = False
+            self._rebuild()
 
     def set_theme(self) -> None:
         self._apply_palette()
-        self._rebuild()
+        if not self.isVisible():
+            self._dirty = True
+        else:
+            self._rebuild()
         self.update()
 
     def _set_category(self, key: str) -> None:
@@ -416,6 +430,11 @@ class FloatPanel(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        if event.oldSize() == event.size():
+            return
+        if not self.isVisible():
+            self._dirty = True
+            return
         self._rebuild()
 
 
@@ -440,6 +459,20 @@ class FloatController(QObject):
         self.panel.launch_requested.connect(self.launch_requested)
         self.panel.menu_requested.connect(self._show_panel_menu)
 
+        # macOS 会在切换 Spaces / 别的 App 全屏 / 本 App 失活时重排窗口层级，
+        # 周期性重新断言原生层级，保证悬浮球始终最前。
+        self._top_timer = QTimer(self)
+        self._top_timer.setInterval(1000)
+        self._top_timer.timeout.connect(self._assert_on_top)
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.applicationStateChanged.connect(
+                    lambda *_: QTimer.singleShot(0, self._assert_on_top)
+                )
+            except (AttributeError, TypeError):
+                pass
+
     # ---------- 生命周期 ----------
     def show(self, pos: tuple[int, int] | list[int] | None = None) -> None:
         if not self.ball.isVisible():
@@ -447,10 +480,34 @@ class FloatController(QObject):
             self.ball.move(x, y)
             self.ball.show()
         self.ball.raise_()
+        # NSWindow 在 show() 之后才创建，下一帧与稍后再各断言一次
+        QTimer.singleShot(0, self._assert_on_top)
+        QTimer.singleShot(150, self._assert_on_top)
+        if not self._top_timer.isActive():
+            self._top_timer.start()
 
     def hide(self) -> None:
+        self._top_timer.stop()
         self.panel.hide()
         self.ball.hide()
+
+    # ---------- 始终最前 ----------
+    def _pin_all(self) -> bool:
+        # 对两个窗口无条件设置：Qt 的 Popup 可能随时隐藏/重建 NSWindow 并重置
+        # level，等「可见」才设置会漏掉它刚显示出来的那一瞬间。
+        ok = nativewindow.pin(self.ball, nativewindow.BALL_LEVEL)
+        ok = nativewindow.pin(self.panel, nativewindow.PANEL_LEVEL) and ok
+        return ok
+
+    def _assert_on_top(self) -> None:
+        if not self.ball.isVisible():
+            return
+        pinned = self._pin_all()
+        if not pinned:
+            # 非 macOS 或原生调用失败时，退回 Qt 的置顶 flag + raise
+            self.ball.raise_()
+            if self.panel.isVisible():
+                self.panel.raise_()
 
     def ball_pos(self) -> tuple[int, int]:
         return self.ball.x(), self.ball.y()
@@ -480,8 +537,14 @@ class FloatController(QObject):
             self.panel.hide()
             return
         self.place_panel()
+        self.panel.ensure_built()      # 延迟到真正展开时才构建网格
         self.panel.show()
         self.panel.raise_()
+        self._pin_all()
+        # Qt 的 Popup 会在 show 之后把 NSWindow level 改回自己的面板级别，
+        # 且 NSWindow 可能尚未创建；分几次断言把层级压住。
+        for delay in (0, 120, 400):
+            QTimer.singleShot(delay, self._assert_on_top)
 
     def _on_ball_moved(self) -> None:
         if self.panel.isVisible():
@@ -526,7 +589,7 @@ class FloatController(QObject):
     def _build_menu(self) -> QMenu:
         menu = QMenu()
         menu.addAction("展开 / 收起应用", self.toggle_panel)
-        menu.addAction("重新读取应用", self.reload_requested.emit)
+        menu.addAction("重新读取应用列表", self.reload_requested.emit)
         menu.addSeparator()
         menu.addAction("显示主窗口", self.main_window_requested.emit)
         menu.addAction("设置…", self.settings_requested.emit)

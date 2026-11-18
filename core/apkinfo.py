@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import re
 import subprocess
 import threading
@@ -24,6 +25,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import paths
+
+# pyaxmlparser 解析部分 resources.arsc 时会刷成百上千条 warning，
+# 对提取结果没有影响，但会淹没日志输出。
+logging.getLogger("pyaxmlparser").setLevel(logging.ERROR)
 
 CACHE_DIR = Path.home() / "Library/Application Support/ScrcpyStudio/appinfo"
 ICON_DIR = CACHE_DIR / "icons"
@@ -65,7 +70,11 @@ def _write_meta(meta: dict[str, dict]) -> None:
 
 def cached_info(package: str, key: str) -> AppInfo | None:
     entry = _read_meta().get(package)
-    if not entry or entry.get("key") != key:
+    if not entry:
+        return None
+    stored = entry.get("key", "")
+    # 旧版 key 是 "<path-hash>-<size>"，兼容命中，避免升级后一次性全量重取
+    if stored != key and not stored.startswith(key + "-"):
         return None
     icon = entry.get("icon", "")
     if icon and not Path(icon).exists():
@@ -129,6 +138,20 @@ def apk_path(serial: str, package: str) -> str:
         if path.endswith("base.apk"):
             return path
     return paths[0] if paths else ""
+
+
+def prefetch_paths(serial: str) -> dict[str, str]:
+    """一次 adb 拿到全部应用的 APK 路径，省掉每个应用一次 `pm path` 往返。"""
+    out = _shell_text(serial, "pm list packages -f", timeout=35)
+    result: dict[str, str] = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line.startswith("package:"):
+            continue
+        path, sep, package = line[8:].rpartition("=")
+        if sep and path.strip().endswith(".apk"):
+            result[package.strip()] = path.strip()
+    return result
 
 
 def _apk_key(path: str) -> str:
@@ -253,13 +276,18 @@ def _full_fetch(serial: str, path: str, key: str) -> tuple[str, bytes] | None:
         tmp.unlink(missing_ok=True)
 
 
-def fetch(serial: str, package: str, force: bool = False) -> AppInfo:
-    """取一个应用的真实名称与图标；结果写入缓存。"""
-    path = apk_path(serial, package)
+def fetch(serial: str, package: str, force: bool = False,
+          prefetched_path: str = "", allow_full: bool = True) -> AppInfo:
+    """取一个应用的真实名称与图标；结果写入缓存。
+
+    prefetched_path 由 prefetch_paths() 批量取得，可省掉一次 `pm path`。
+    allow_full=False 时轻量解析失败就放弃，不再 pull 整包 —— 常规加载用这个，
+    避免设备没有 unzip 时对几十个应用逐个拉几十 MB 造成界面长时间卡顿。
+    """
+    path = prefetched_path or apk_path(serial, package)
     if not path:
         return AppInfo(package)
-    apk_size = _size_of(serial, path)
-    key = _apk_key(path) + (f"-{apk_size}" if apk_size else "")
+    key = _apk_key(path)
 
     if not force:
         hit = cached_info(package, key)
@@ -274,8 +302,8 @@ def fetch(serial: str, package: str, force: bool = False) -> AppInfo:
             source = "light"
     except Exception:  # noqa: BLE001 - 任何失败都退回整包
         result = None
-    if not result:
-        result = _full_fetch(serial, path, _apk_key(path))
+    if not result and allow_full:
+        result = _full_fetch(serial, path, key)
         if result:
             source = "full"
 

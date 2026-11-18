@@ -25,9 +25,21 @@ class _Job(QRunnable):
         try:
             result = self.fn(*self.args, **self.kwargs)
         except Exception as exc:  # noqa: BLE001 - 任何异常都要回报到界面
-            self.signals.failed.emit(str(exc))
+            self._emit_failed(str(exc))
             return
-        self.signals.done.emit(result)
+        self._emit_done(result)
+
+    def _emit_done(self, result) -> None:
+        try:
+            self.signals.done.emit(result)
+        except RuntimeError:  # 窗口已销毁 / 程序退出中，忽略回调
+            pass
+
+    def _emit_failed(self, message: str) -> None:
+        try:
+            self.signals.failed.emit(message)
+        except RuntimeError:
+            pass
 
 
 _pool = QThreadPool.globalInstance()

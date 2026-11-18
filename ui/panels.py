@@ -403,8 +403,15 @@ class AppPanel(Card):
         self._apply_filter()
 
     def merge_appinfo(self, mapping: dict[str, AppInfo]) -> None:
+        changed: set[str] = set()
+        for package, info in mapping.items():
+            old = self._appinfo.get(package)
+            if old is None or (old.label, old.icon) != (info.label, info.icon):
+                changed.add(package)
         self._appinfo.update(mapping)
-        clear_pixmap_cache()
+        if not changed:
+            return
+        clear_pixmap_cache(changed)      # 只清变化包的图标缓存
         self._apply_filter()
 
     def refresh(self) -> None:
@@ -502,8 +509,8 @@ class AppPanel(Card):
         if self._view == "desktop":
             self.launchpad.set_data(visible, self._category, self._group_by, self._dock)
             self.launchpad.set_running(self._running)
-            if not self._progress_text:
-                self.launchpad.footer.setText(self.footer_text())
+            # set_data/_patch_icons 会重设 footer，这里把进度文字补回来
+            self.launchpad.footer.setText(self._progress_text or self.footer_text())
             self.stack.setCurrentWidget(self.launchpad)
         elif not visible:
             self.empty.setText("连接设备后，这里会列出所有\n带桌面入口、可以投屏的应用"

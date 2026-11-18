@@ -22,8 +22,13 @@ _CELL_H = 118
 _PIX_CACHE: dict[tuple[str, int], QPixmap] = {}
 
 
-def clear_pixmap_cache() -> None:
-    _PIX_CACHE.clear()
+def clear_pixmap_cache(packages: set[str] | None = None) -> None:
+    """只让指定包的图标缓存失效，避免整张网格的 PNG 反复解码。"""
+    if not packages:
+        _PIX_CACHE.clear()
+        return
+    for key in [k for k in _PIX_CACHE if k[0] in packages]:
+        _PIX_CACHE.pop(key, None)
 
 
 def _rounded(src: QPixmap, size: int) -> QPixmap:
@@ -43,7 +48,7 @@ def _rounded(src: QPixmap, size: int) -> QPixmap:
 
 
 def app_pixmap(app: AppData, size: int = _ICON) -> QPixmap:
-    key = (f"{app.icon}|{app.name}|{app.category}", size)
+    key = (app.package, app.icon, app.name, app.category, size)
     if key in _PIX_CACHE:
         return _PIX_CACHE[key]
     pix: QPixmap | None = None
@@ -287,12 +292,45 @@ class Launchpad(QWidget):
 
     def set_data(self, apps: list[AppData], category: str = "all",
                  group_by: bool = True, dock: list[str] | None = None) -> None:
-        self._apps = list(apps)
+        new_apps = list(apps)
+        cols_changed = self._recalc_cols()
+        # 图标结果分批回来时，包的顺序/数量都不变，只需局部换图换名，
+        # 不必销毁重建几十个 widget（这是刷新时主线程卡顿的主要来源）。
+        same_structure = (
+            not cols_changed
+            and category == self._category
+            and group_by == self._group_by
+            and len(new_apps) == len(self._apps)
+            and len(self._icons) == len(new_apps)
+            and all(a.package == b.package for a, b in zip(new_apps, self._apps))
+        )
+        self._apps = new_apps
         self._category = category
         self._group_by = group_by
         self._dock = list(dock or [])
-        self._recalc_cols()
-        self._rebuild()
+        if same_structure:
+            self._patch_icons()
+        else:
+            self._rebuild()
+        self.set_running(self._running)
+
+    def _patch_icons(self) -> None:
+        by_pkg = {a.package: a for a in self._apps}
+        for icon in self._icons:
+            new = by_pkg.get(icon.app.package)
+            if new is None or (new.name, new.icon, new.category) == (
+                    icon.app.name, icon.app.icon, icon.app.category):
+                continue
+            icon.app = new
+            icon.icon_label.setPixmap(app_pixmap(new, _ICON))
+            metrics = icon.name_label.fontMetrics()
+            icon.name_label.setText(
+                metrics.elidedText(new.name, Qt.ElideRight, _CELL_W - 12)
+            )
+            icon.setToolTip(
+                f"{new.name}\n{new.package}\n{label_of(new.category)}\n双击投屏"
+            )
+        self.footer.setText(self.dots())
 
     def set_running(self, packages: set[str]) -> None:
         self._running = set(packages)

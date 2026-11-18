@@ -32,14 +32,14 @@ macOS 桌面投屏工作台：集中管理 adb / scrcpy，用 **macOS Launchpad 
 
 | 产物 | 体积 | 说明 |
 |---|---|---|
-| [ScrcpyStudio-0.4.0-macOS-arm64.app.zip](dist/ScrcpyStudio-0.4.0-macOS-arm64.app.zip) | 约 56 MB | **解压即用**，Apple Silicon / macOS 12+ |
-| [ScrcpyStudio-0.4.0-macOS-arm64-source.tar.gz](dist/ScrcpyStudio-0.4.0-macOS-arm64-source.tar.gz) | 约 3 MB | 源码快照（含界面预览图与图标），按下方「环境准备」安装 |
-| [app.zip.sha256](dist/ScrcpyStudio-0.4.0-macOS-arm64.app.zip.sha256) · [source.tar.gz.sha256](dist/ScrcpyStudio-0.4.0-macOS-arm64-source.tar.gz.sha256) | — | 校验文件 |
+| [ScrcpyStudio-0.4.1-macOS-arm64.app.zip](dist/ScrcpyStudio-0.4.1-macOS-arm64.app.zip) | 约 56 MB | **解压即用**，Apple Silicon / macOS 12+ |
+| [ScrcpyStudio-0.4.1-macOS-arm64-source.tar.gz](dist/ScrcpyStudio-0.4.1-macOS-arm64-source.tar.gz) | 约 3 MB | 源码快照（含界面预览图与图标），按下方「环境准备」安装 |
+| [app.zip.sha256](dist/ScrcpyStudio-0.4.1-macOS-arm64.app.zip.sha256) · [source.tar.gz.sha256](dist/ScrcpyStudio-0.4.1-macOS-arm64-source.tar.gz.sha256) | — | 校验文件 |
 
 ```bash
 # 校验下载完整性
-shasum -a 256 -c ScrcpyStudio-0.4.0-macOS-arm64.app.zip.sha256
-# SHA256: f65f333c0bdb87d50f983beb898ca028035b3d81b75179f31d2654c155365c26
+shasum -a 256 -c ScrcpyStudio-0.4.1-macOS-arm64.app.zip.sha256
+# SHA256: 23670aa246ef337009a0ec693f46d17f0511f85f9c46b41f885f3554b746b52c
 ```
 
 首次打开若被 Gatekeeper 拦截（未做正式 Apple 签名，只有 ad-hoc 签名）：
@@ -68,11 +68,15 @@ xattr -cr ~/Downloads/ScrcpyStudio.app   # 或在 Finder 里右键 App → 打�
 始终最前的圆形悬浮球（显示 App 图标）。单击展开半透明 Launchpad 风格应用面板，
 再点一次或点击别处收起；拖动小球可换位置，位置会记住，面板会自动跟着小球选择展开方向。
 
+> **置顶实现**：除 Qt 的置顶 flag 外，还会把悬浮球与面板的 macOS 原生窗口层级设为
+> `NSScreenSaverWindowLevel+1`，并允许跨 Spaces / 全屏辅助显示；每秒重新断言一次，
+> 切换应用、别的 App 进入全屏或系统重排窗口后仍保持在最前。
+
 - 面板按小球所在屏幕与象限决定向左/右、向上/下展开，并 clamp 到屏幕可用区域，
   **始终保证 7 列 × 4 行的最小网格完整可见**（屏幕较小时自动缩小单元尺寸）。
 - 面板包含标题、设备名 / 应用数、分类胶囊、分隔线与 7 列图标网格；
   **单击图标即在新窗口投屏**，仍可同时打开多个应用。
-- 右键小球（或面板「⋯」）：展开 / 收起、重新读取应用、显示主窗口、设置、
+- 右键小球（或面板「⋯」）：展开 / 收起、重新读取应用列表、显示主窗口、设置、
   退出悬浮球模式、退出程序。
 - 设置 → 设备连接 勾选「连接设备后自动进入悬浮球模式」后，
   设备从离线变在线时会自动收起主窗口并切到悬浮球形态。
@@ -87,6 +91,23 @@ App 未运行时插入 USB 也想被唤醒，需要系统级守护（macOS 没�
 
 > 该守护由用户显式启用，安装 App 时不会自动写入；启用后会随账户登录常驻一个轻量后台进程。
 > 若同时勾选「自动进入悬浮球模式」，插线后就会直接变成悬浮球形态。
+
+### 首次连接与应用列表刷新
+
+设备刚插上时 adb 可能尚未完成枚举 / 授权，读取应用列表会返回空。程序**不会把空结果缓存**：
+会按 1.2s / 2.2s / 3.5s / 5s 自动重试 4 次，之后每次 15 秒轮询继续补读，
+设备就绪后无需手动操作即可出现应用；界面会显示「等待设备就绪 · 第 N 次重试」。
+
+两个刷新入口是分开的，不要混用：
+
+| 入口 | 作用 |
+|---|---|
+| 更多菜单 → **重新读取应用列表** | 只重新查一次包名列表，**沿用本地名称/图标缓存**，很快 |
+| 更多菜单 → **重新提取名称与图标（较慢）** | 清空 APK 信息缓存、逐个重新解析，仅在图标缺失或应用更新后用 |
+
+名称与图标由后台线程分批回传，主界面网格只局部替换变化的图标 widget，
+悬浮球面板在收起状态**不构建网格**，展开时才一次性生成，因此批量回传时界面依然流畅。
+APK 路径用一条 `pm list packages -f` 批量取得，缓存命中直接返回，常规加载不会 pull 整包 APK。
 
 ### Launchpad 风格应用舞台
 
@@ -242,6 +263,16 @@ brew upgrade scrcpy                   # Homebrew 版本可能停留在 4.x
 # 或下载官方 macOS 预编译包，解压到 ~/.local/opt/scrcpy/（程序会自动查找）
 ```
 
+### 首次连接后应用列表空白 / 刷新很卡
+
+- 现在会自动重试（见「首次连接与应用列表刷新」）。若一直空白，先确认手机已解锁、
+  已授权 USB 调试，再点「重新读取应用列表」。
+- 以前「重新读取应用」会顺带清空全部图标缓存并对每个应用重新解析 APK，
+  设备不支持 `unzip -p` 时还会逐个 pull 整包，导致长时间卡顿。该行为已拆分到
+  「重新提取名称与图标（较慢）」，常规刷新不再触发。
+- `pyaxmlparser` 解析部分 `resources.arsc` 时会刷大量 `res1 is not zero!` 警告，
+  已提高该库日志级别到 ERROR，不再淹没输出。
+
 ## 已知限制
 
 - 手机重启后无线调试默认关闭，App 无权替你打开（无 root / 无 Shizuku 的固有限制）。
@@ -251,7 +282,8 @@ brew upgrade scrcpy                   # Homebrew 版本可能停留在 4.x
 - 构建产物为 ad-hoc 签名、面向 Apple Silicon；Intel Mac 请走源码方式。
   二进制产物会让仓库体积随版本增长，大版本建议改用 GitHub Release 附件或 Git LFS。
 - 真机上「同时投多个应用窗口」依赖设备允许多虚拟显示；部分 ROM 可能有数量上限。
-- 悬浮球是 Qt 置顶窗口，在 macOS 全屏 Spaces 或某些全屏 App 之上可能被遮挡。
+- 悬浮球使用高于系统屏保的原生窗口层级，会盖住菜单栏与部分系统浮层；
+  展开的应用面板同样是置顶窗口，点击别处即收起。
 - 「插 USB 自动启动」依赖 launchd 守护轮询（3 秒间隔），拔插后需等待一个检查周期。
 
 ## 目录结构
@@ -279,6 +311,7 @@ ui/panels.py            设备栏 / 应用舞台 / 参数表单 / 日志
 ui/settings_dialog.py   设置对话框（投屏 / 外观 / 连接）
 ui/mirrorbar.py         多投屏窗口状态条
 ui/floatball.py         悬浮球、跟随定位与半透明应用面板
+ui/nativewindow.py      macOS 原生窗口层级（始终置顶）
 ui/inputpanel.py        设备输入面板
 ui/dialogs.py           无线连接 / 配对对话框
 ui/usbdialog.py         USB 连接向导
@@ -286,6 +319,7 @@ ui/main_window.py       主窗口、工具栏与多进程投屏管理
 scripts/build_app.sh    自包含 App 构建脚本
 scripts/make_icon.py    App 图标生成（PNG + icns）
 scripts/usb_watch.sh    USB 自启守护脚本
+scripts/verify_connect.py  首次连接与刷新性能回归自检
 scripts/shot*.py        离屏截图自检脚本
 dist/                   构建产物（app.zip / source.tar.gz / SHA256）
 ```

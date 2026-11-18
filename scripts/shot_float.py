@@ -59,6 +59,7 @@ def main() -> int:
     controller.show((60, 60))
     controller.panel.setFixedSize(830, 620)
     controller.panel.move(150, 130)
+    controller.panel.ensure_built()   # 面板隐藏时数据延迟构建，截图前显式触发
     controller.panel.show()
 
     canvas = QImage(1120, 820, QImage.Format_ARGB32_Premultiplied)
