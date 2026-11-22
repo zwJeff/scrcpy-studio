@@ -9,7 +9,9 @@ from PySide6.QtWidgets import (
 )
 
 from core import paths, usbautostart
-from core.config import AppState, MirrorConfig
+from core.config import (
+    AppState, CONTROL_ITEMS, CONTROL_ITEM_DEFAULTS, MirrorConfig,
+)
 
 from . import style
 from .panels import SettingsPanel
@@ -40,6 +42,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self.form, "投屏参数")
         tabs.addTab(self._build_appearance(state), "外观")
         tabs.addTab(self._build_connection(state), "设备连接")
+        tabs.addTab(self._build_control_items(state), "控制条内容")
         outer.addWidget(tabs, 1)
 
         buttons = QDialogButtonBox(
@@ -128,6 +131,13 @@ class SettingsDialog(QDialog):
         )
         form.addRow("", self.control_follow)
 
+        self.show_control_bar = QCheckBox("投屏时显示控制条（默认不显示）")
+        self.show_control_bar.setChecked(state.show_control_bar)
+        self.show_control_bar.setToolTip(
+            "关闭时控制条仍会跟随计算位置，可在悬浮球「⋯ 更多操作」里临时显示"
+        )
+        form.addRow("", self.show_control_bar)
+
         self.usb_port = QSpinBox()
         self.usb_port.setRange(1, 65535)
         self.usb_port.setValue(state.usb_port)
@@ -178,6 +188,27 @@ class SettingsDialog(QDialog):
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         lay.addWidget(hint)
+        lay.addStretch(1)
+        return page
+
+    def _build_control_items(self, state: AppState) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(18, 18, 18, 18)
+        lay.setSpacing(9)
+        hint = QLabel(
+            "勾选控制条里要显示的内容。控制条默认不显示，"
+            "可在悬浮球「⋯ 更多操作 → 显示 / 隐藏控制条」里临时打开。"
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        self.control_item_boxes: dict[str, QCheckBox] = {}
+        for key, text in CONTROL_ITEMS:
+            box = QCheckBox(text)
+            box.setChecked(state.control_items.get(key, True))
+            self.control_item_boxes[key] = box
+            lay.addWidget(box)
         lay.addStretch(1)
         return page
 
@@ -238,6 +269,9 @@ class SettingsDialog(QDialog):
         self.auto_float_mirror.setChecked(True)
         self.remember_geometry.setChecked(True)
         self.control_follow.setChecked(True)
+        self.show_control_bar.setChecked(False)
+        for key in CONTROL_ITEM_DEFAULTS:
+            self.control_item_boxes[key].setChecked(True)
         self.usb_port.setValue(5555)
         self.adb_path.clear()
         self.scrcpy_path.clear()
@@ -271,6 +305,15 @@ class SettingsDialog(QDialog):
 
     def control_follow_value(self) -> bool:
         return self.control_follow.isChecked()
+
+    def show_control_bar_value(self) -> bool:
+        return self.show_control_bar.isChecked()
+
+    def control_items_value(self) -> dict[str, bool]:
+        return {
+            key: box.isChecked()
+            for key, box in self.control_item_boxes.items()
+        }
 
     def usb_port_value(self) -> int:
         return self.usb_port.value()

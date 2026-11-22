@@ -1,6 +1,7 @@
 """主窗口：玻璃工具栏 + Launchpad 舞台 + 多窗口 scrcpy 进程管理。"""
 from __future__ import annotations
 
+import os
 import shlex
 import threading
 import uuid
@@ -45,6 +46,7 @@ class MirrorWindow:
     last_geometry: dict | None = None  # 最近一次采样到的窗口位置尺寸
     ever_visible: bool = False          # 窗口是否曾经在屏幕上出现过
     missing_frames: int = 0             # 连续读不到窗口的次数（用于最小化判定）
+    minimized_hidden: bool = False      # 控制条是否因窗口最小化被隐藏
 
 
 def _app_icon() -> QIcon:
@@ -95,6 +97,8 @@ class MainWindow(QMainWindow):
         self.current_serial: str = ""
         self.processes: dict[str, MirrorWindow] = {}
         self.controls: dict[str, MirrorControl] = {}
+        self._controls_visible = self.state.show_control_bar
+        self._follow_diagnosed = False
         self._geometry_timer = QTimer(self)
         self._geometry_timer.setInterval(120)   # 控制条跟随需要足够短的采样间隔
         self._geometry_timer.timeout.connect(self._sample_geometry)
@@ -310,7 +314,7 @@ class MainWindow(QMainWindow):
     def _about(self) -> None:
         QMessageBox.about(
             self, "关于 Scrcpy Studio",
-            "Scrcpy Studio 0.6.1\n\n"
+            "Scrcpy Studio 0.6.2\n\n"
             "macOS 桌面投屏工作台：USB / 无线设备管理、真实应用图标、"
             "应用分类、设备文本输入、多窗口单应用投屏与悬浮球模式。\n\n"
             "基于 scrcpy 5.x 与 adb。",
@@ -409,6 +413,9 @@ class MainWindow(QMainWindow):
         self.float_controller.settings_requested.connect(self.open_settings)
         self.float_controller.reload_requested.connect(lambda: self.load_apps(force=True))
         self.float_controller.focus_requested.connect(self.focus_mirror)
+        self.float_controller.control_visibility_requested.connect(
+            self._toggle_control_visibility
+        )
         self.float_controller.quit_requested.connect(self.close)
 
         self.input_panel.send_requested.connect(self.send_text)
@@ -485,8 +492,13 @@ class MainWindow(QMainWindow):
             self.state.auto_float_on_mirror = dialog.auto_float_mirror_value()
             self.state.remember_window_geometry = dialog.remember_geometry_value()
             self.state.control_follow_window = dialog.control_follow_value()
+            self.state.show_control_bar = dialog.show_control_bar_value()
+            self.state.control_items = dialog.control_items_value()
+            self._controls_visible = self.state.show_control_bar
             for control in self.controls.values():
                 control.set_following(self.state.control_follow_window)
+                control.apply_items(self.state.control_items)
+                control.setVisible(self._controls_visible)
             self.state.adb_path = dialog.adb_path_value()
             self.state.scrcpy_path = dialog.scrcpy_path_value()
             paths.set_overrides(self.state.adb_path, self.state.scrcpy_path)
@@ -1101,7 +1113,7 @@ class MainWindow(QMainWindow):
     # ---------- 每个投屏窗口的控制条 ----------
     def _create_control(self, window_id: str, label: str, serial: str,
                         geometry: dict | None) -> None:
-        control = MirrorControl(window_id, label, serial)
+        control = MirrorControl(window_id, label, serial, self.state.control_items)
         control.key_requested.connect(self._control_key)
         control.text_requested.connect(self._control_text)
         control.copy_requested.connect(self._control_copy)
@@ -1122,12 +1134,17 @@ class MainWindow(QMainWindow):
             pos = (area.left() + 40,
                    area.top() + 28 + 66 * (len(self.controls) % 5)) if area else (80, 80)
         control.move(*pos)
-        control.show()
-        control.raise_()
+        # 默认不显示控制条；跟随仍会持续计算位置，打开时立刻出现在正确位置
+        control.setVisible(self._controls_visible)
+        if self._controls_visible:
+            control.raise_()
         QTimer.singleShot(
             0, lambda: nativewindow.pin(control, nativewindow.CONTROL_LEVEL)
         )
         self.controls[window_id] = control
+        # 窗口刚创建时 CGWindowList 可能还读不到，主动补几次采样
+        for delay in (300, 1000, 2500):
+            QTimer.singleShot(delay, self._sample_geometry)
 
     def _control_key(self, serial: str, name: str) -> None:
         run_async(
@@ -1188,38 +1205,88 @@ class MainWindow(QMainWindow):
         if not self.processes:
             self._geometry_timer.stop()
             return
-        pids: set[int] = set()
+        active: list[tuple[MirrorWindow, int]] = []
         for window in self.processes.values():
             pid = int(window.proc.processId() or 0)
             if pid and window.proc.state() != QProcess.NotRunning:
-                pids.add(pid)
+                active.append((window, pid))
         # 一次 CGWindowList 枚举覆盖所有投屏窗口，避免高频轮询放大 CPU 开销
+        pids = {pid for _window, pid in active}
         bounds_map = nativewindow.window_bounds_map(pids)
-        for window in self.processes.values():
-            pid = int(window.proc.processId() or 0)
+
+        # 单窗口且 PID 完全未命中（包装脚本 / SDL 代理进程）时做一次兜底
+        if len(active) == 1 and active[0][1] not in bounds_map:
+            fallback = self._fallback_window_bounds(active[0][1])
+            if fallback:
+                bounds_map[active[0][1]] = fallback
+
+        for window, pid in active:
             bounds = bounds_map.get(pid)
+            control = self.controls.get(window.id)
             if bounds:
                 window.missing_frames = 0
                 window.ever_visible = True
                 window.last_geometry = bounds
+                if self._controls_visible and window.minimized_hidden:
+                    if control is not None:
+                        control.show()
+                    window.minimized_hidden = False
                 self._follow_control(window, bounds)
             elif window.ever_visible:
-                # 窗口曾可见却连续读不到：多半是最小化或切到别的 Space，
-                # 隐藏控制条，恢复显示时由 _follow_control 重新显示
+                # 窗口曾可见却连续读不到：多半是最小化或切到别的 Space
                 window.missing_frames += 1
-                if window.missing_frames >= 3:
-                    control = self.controls.get(window.id)
-                    if control is not None and control.isVisible():
-                        control.hide()
+                if window.missing_frames >= 3 and control is not None \
+                        and control.isVisible():
+                    control.hide()
+                    window.minimized_hidden = True
+
+        # 长时间读不到窗口时给出一次性诊断，便于定位跟随失效
+        if not self._follow_diagnosed and any(
+                window.ever_visible and window.missing_frames >= 10
+                for window in self.processes.values()):
+            count = len(nativewindow.window_bounds_all())
+            self.console.log(
+                "[跟随诊断] 连续读不到投屏窗口；"
+                f"屏幕普通窗口 {count} 个，跟随开关={self.state.control_follow_window}，"
+                f"控制条显示={self._controls_visible}。"
+                "请确认窗口仍在同一 Space，或开启 scrcpy 的无边框/置顶。"
+            )
+            self._follow_diagnosed = True
+
+    def _fallback_window_bounds(self, pid: int) -> dict | None:
+        """只有一个投屏窗口且 PID 对不上时，找唯一一个像手机画面的竖屏窗口。
+
+        只在候选唯一时启用，避免误绑到别的 App 窗口；多窗口场景一律不猜。
+        """
+        own = os.getpid()
+        candidates = []
+        for owner_pid, bounds in nativewindow.window_bounds_all().items():
+            if owner_pid in (own, pid):
+                continue
+            w, h = bounds["width"], bounds["height"]
+            if w >= 240 and h >= 320 and 0.3 <= w / h <= 1.0:
+                candidates.append(bounds)
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _toggle_control_visibility(self) -> None:
+        """悬浮球「更多操作」里的显示 / 隐藏控制条（临时切换，不写配置）。"""
+        self._controls_visible = not self._controls_visible
+        for control in self.controls.values():
+            control.setVisible(self._controls_visible)
+            if self._controls_visible:
+                control.raise_()
+        if self._controls_visible:
+            self._sample_geometry()      # 显示时立刻贴到正确位置
+        self.console.log(
+            "[控制条] 已显示 · 跟随投屏窗口" if self._controls_visible
+            else "[控制条] 已隐藏"
+        )
 
     def _follow_control(self, window: MirrorWindow, bounds: dict) -> None:
-        """把控制条贴到 scrcpy 窗口上方；不跟随或已固定时只保证可见。"""
+        """把控制条贴到 scrcpy 窗口上方；只更新位置，不改变可见性。"""
         control = self.controls.get(window.id)
         if control is None:
             return
-        if not control.isVisible():
-            control.show()
-            control.raise_()
         if not self.state.control_follow_window or not control.is_following():
             return
 

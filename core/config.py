@@ -11,6 +11,21 @@ from . import paths
 CONFIG_DIR = Path.home() / "Library/Application Support/ScrcpyStudio"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
+# 控制条可显示的内容（顺序即设置页顺序）
+CONTROL_ITEMS: list[tuple[str, str]] = [
+    ("title", "应用名 / 点击置前"),
+    ("back", "返回键 ◀"),
+    ("menu", "菜单键 ☰"),
+    ("home", "主屏键 ⌂"),
+    ("recents", "最近任务 ▤"),
+    ("input", "文本输入 + 发送"),
+    ("copy", "复制按钮"),
+    ("follow", "跟随 / 固定按钮"),
+    ("close", "关闭窗口 ×"),
+    ("drag", "拖动把手"),
+]
+CONTROL_ITEM_DEFAULTS = {name: True for name, _ in CONTROL_ITEMS}
+
 
 @dataclass
 class MirrorConfig:
@@ -151,6 +166,10 @@ class AppState:
     # 每个应用记住的投屏窗口几何与控制条位置
     remember_window_geometry: bool = True
     control_follow_window: bool = True      # 控制条跟随投屏窗口贴合显示
+    show_control_bar: bool = False          # 默认不显示控制条，需要时从菜单打开
+    control_items: dict[str, bool] = field(
+        default_factory=lambda: dict(CONTROL_ITEM_DEFAULTS)
+    )
     window_geometry: dict[str, dict] = field(default_factory=dict)
 
     # 悬浮球
@@ -212,6 +231,12 @@ def load_state() -> AppState:
     state.auto_float_on_mirror = bool(raw.get("auto_float_on_mirror", True))
     state.remember_window_geometry = bool(raw.get("remember_window_geometry", True))
     state.control_follow_window = bool(raw.get("control_follow_window", True))
+    state.show_control_bar = bool(raw.get("show_control_bar", False))
+    saved_items = raw.get("control_items")
+    if isinstance(saved_items, dict):
+        for name in CONTROL_ITEM_DEFAULTS:
+            if isinstance(saved_items.get(name), bool):
+                state.control_items[name] = saved_items[name]
     geo = raw.get("window_geometry")
     state.window_geometry = dict(geo) if isinstance(geo, dict) else {}
     pos = raw.get("float_ball_pos") or []
@@ -256,6 +281,8 @@ def save_state(state: AppState) -> None:
         "auto_float_on_mirror": state.auto_float_on_mirror,
         "remember_window_geometry": state.remember_window_geometry,
         "control_follow_window": state.control_follow_window,
+        "show_control_bar": state.show_control_bar,
+        "control_items": state.control_items,
         "window_geometry": state.window_geometry,
         "float_ball_pos": state.float_ball_pos,
         "usb_autostart": state.usb_autostart,

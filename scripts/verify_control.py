@@ -7,14 +7,18 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
+import warnings
 from pathlib import Path
 from unittest.mock import patch
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from PySide6.QtCore import QProcess  # noqa: E402
+from PySide6.QtCore import QProcess, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
 
 app = QApplication([])
@@ -157,6 +161,56 @@ def main() -> int:
         check("跟随按钮可恢复跟随", control.is_following())
         check("恢复跟随后立刻贴回窗口", (control.x(), control.y()) != (77, 88))
 
+        print("=== 默认隐藏 / 菜单显示切换 ===")
+        check("默认不显示控制条", not w._controls_visible)
+        w._toggle_control_visibility()
+        check("菜单可临时显示控制条", w._controls_visible and control.isVisible())
+        check("显示时立即贴到窗口位置", (control.x(), control.y()) != (77, 88))
+        w._toggle_control_visibility()
+        check("菜单可再次隐藏控制条", not control.isVisible())
+        w._toggle_control_visibility()
+
+        print("=== 控制条内容自定义 ===")
+        control.apply_items({"back": False, "input": False, "copy": False})
+        check("可隐藏返回键", not control.key_buttons["back"].isVisible())
+        check("可隐藏文本输入", not control.edit.isVisible())
+        check("可隐藏复制按钮", not control.copy_btn.isVisible())
+        check("未关闭的控件仍显示", control.key_buttons["menu"].isVisible())
+        control.apply_items({k: True for k in control.key_buttons} | {"input": True})
+        check("可恢复全部内容", control.key_buttons["back"].isVisible()
+              and control.edit.isVisible())
+
+        print("=== 单击拖动把手不误触解除跟随 ===")
+        control.set_following(True)
+        handle = control.drag_handle
+        from PySide6.QtCore import QEvent, QPointF
+        from PySide6.QtGui import QMouseEvent
+        press = QMouseEvent(QEvent.MouseButtonPress, QPointF(3, 3),
+                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        release = QMouseEvent(QEvent.MouseButtonRelease, QPointF(3, 3),
+                              Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+        handle.mousePressEvent(press)
+        handle.mouseReleaseEvent(release)
+        check("单击把手仍保持跟随", control.is_following())
+
+        print("=== PID 兜底匹配 ===")
+        control.set_following(True)
+        w.state.control_follow_window = True
+        bounds_holder["value"] = SAMPLED
+        w._sample_geometry()
+        before_fallback = (control.x(), control.y())
+        with patch("ui.main_window.nativewindow.window_bounds_map",
+                   return_value={}), \
+             patch("ui.main_window.nativewindow.window_bounds_all",
+                   return_value={9999: {"x": 400, "y": 300, "width": 480,
+                                        "height": 800}}):
+            w.processes[window_id].ever_visible = True
+            w.processes[window_id].missing_frames = 0
+            w._sample_geometry()
+        check("PID 对不上时仍能兜底跟随",
+              (control.x(), control.y()) != before_fallback,
+              f"{before_fallback} → {(control.x(), control.y())}")
+
         print("=== 窗口最小化隐藏与恢复 ===")
         bounds_holder["value"] = None
         for _ in range(3):
@@ -204,6 +258,27 @@ def main() -> int:
         w.focus_mirror("w1")
         check("窗口不在屏幕时走恢复最小化的备用路径", fallback.call_count == 1)
     w.processes.pop("w1", None)
+
+    print("=== 配置持久化与设置页 ===")
+    from core.config import AppState, CONTROL_ITEM_DEFAULTS, load_state, save_state
+    from ui.settings_dialog import SettingsDialog
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch("core.config.CONFIG_DIR", Path(tmp)), \
+             patch("core.config.CONFIG_PATH", Path(tmp) / "config.json"):
+            state = AppState(show_control_bar=True)
+            state.control_items = dict(CONTROL_ITEM_DEFAULTS)
+            state.control_items["back"] = False
+            save_state(state)
+            loaded = load_state()
+            check("显示开关可持久化", loaded.show_control_bar is True)
+            check("内容选择可持久化", loaded.control_items["back"] is False
+                  and loaded.control_items["menu"] is True)
+    dialog = SettingsDialog(None, AppState())
+    check("设置页新增控制条内容标签", dialog.tabs.count() == 4)
+    check("显示开关默认关闭", dialog.show_control_bar_value() is False)
+    check("内容默认全选", all(dialog.control_items_value().values()))
+    dialog.control_item_boxes["back"].setChecked(False)
+    check("内容勾选可读回", dialog.control_items_value()["back"] is False)
 
     print("=== 图标 60% 与配套窗口参数 ===")
     check("主 Launchpad 图标 84 → 50", launchpad._ICON == 50)

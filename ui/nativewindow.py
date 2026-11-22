@@ -189,12 +189,15 @@ end tell'''
         return False
 
 
-def _collect_window_bounds(target_pids: set[int]) -> dict[int, dict]:
+def _collect_window_bounds(target_pids: set[int] | None) -> dict[int, dict]:
     """一次 CGWindowList 枚举，收集目标进程各自面积最大的正常窗口。
 
-    跟随轮询会高频调用，绝不能每个窗口单独枚举一次全屏窗口列表。
+    target_pids=None 表示收集全部；跟随轮询会高频调用，
+    绝不能每个窗口单独枚举一次全屏窗口列表。
     """
-    if not _IS_MAC or not target_pids:
+    if not _IS_MAC:
+        return {}
+    if target_pids is not None and not target_pids:
         return {}
     try:
         from ctypes import (
@@ -249,7 +252,7 @@ def _collect_window_bounds(target_pids: set[int]) -> dict[int, dict]:
                                            byref(owner_pid)):
                     continue
                 pid = owner_pid.value
-                if pid not in target_pids:
+                if target_pids is not None and pid not in target_pids:
                     continue
                 layer_ref = cf.CFDictionaryGetValue(
                     c_void_p(info), c_void_p(keys["kCGWindowLayer"])
@@ -302,6 +305,13 @@ def window_bounds_map(pids) -> dict[int, dict]:
         return {}
     targets = {int(p) for p in pids if int(p) > 0}
     return _collect_window_bounds(targets)
+
+
+def window_bounds_all() -> dict[int, dict]:
+    """所有在屏普通窗口，供 PID 不匹配时的兜底与诊断。"""
+    if not _IS_MAC:
+        return {}
+    return _collect_window_bounds(None)
 
 
 def level_of(widget) -> int:

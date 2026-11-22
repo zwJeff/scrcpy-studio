@@ -578,6 +578,7 @@ class FloatController(QObject):
     reload_requested = Signal()
     quit_requested = Signal()
     focus_requested = Signal(str)          # 把已投屏窗口置前（window_id）
+    control_visibility_requested = Signal()  # 显示 / 隐藏控制条
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -791,6 +792,7 @@ class FloatController(QObject):
         menu = QMenu()
         menu.addAction("展开 / 收起应用列表", self.toggle_panel)
         menu.addAction("已投屏窗口…", self.toggle_window_list)
+        menu.addAction("显示 / 隐藏控制条", self.control_visibility_requested.emit)
         menu.addAction("重新读取应用列表", self.reload_requested.emit)
         menu.addSeparator()
         menu.addAction("显示主窗口", self.main_window_requested.emit)
