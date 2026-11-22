@@ -7,7 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QProcess, QProcessEnvironment, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor, QFont, QGuiApplication, QIcon, QKeySequence, QPainter,
     QPixmap, QShortcut,
@@ -43,6 +43,8 @@ class MirrorWindow:
     proc: QProcess
     key: str = ""                       # 配置键：包名，整屏用 "__screen__"
     last_geometry: dict | None = None  # 最近一次采样到的窗口位置尺寸
+    ever_visible: bool = False          # 窗口是否曾经在屏幕上出现过
+    missing_frames: int = 0             # 连续读不到窗口的次数（用于最小化判定）
 
 
 def _app_icon() -> QIcon:
@@ -94,7 +96,7 @@ class MainWindow(QMainWindow):
         self.processes: dict[str, MirrorWindow] = {}
         self.controls: dict[str, MirrorControl] = {}
         self._geometry_timer = QTimer(self)
-        self._geometry_timer.setInterval(2000)
+        self._geometry_timer.setInterval(120)   # 控制条跟随需要足够短的采样间隔
         self._geometry_timer.timeout.connect(self._sample_geometry)
         self._float_mode = False
         self._had_online = False
@@ -308,7 +310,7 @@ class MainWindow(QMainWindow):
     def _about(self) -> None:
         QMessageBox.about(
             self, "关于 Scrcpy Studio",
-            "Scrcpy Studio 0.6.0\n\n"
+            "Scrcpy Studio 0.6.1\n\n"
             "macOS 桌面投屏工作台：USB / 无线设备管理、真实应用图标、"
             "应用分类、设备文本输入、多窗口单应用投屏与悬浮球模式。\n\n"
             "基于 scrcpy 5.x 与 adb。",
@@ -482,6 +484,9 @@ class MainWindow(QMainWindow):
             self.state.auto_float_on_connect = dialog.auto_float_value()
             self.state.auto_float_on_mirror = dialog.auto_float_mirror_value()
             self.state.remember_window_geometry = dialog.remember_geometry_value()
+            self.state.control_follow_window = dialog.control_follow_value()
+            for control in self.controls.values():
+                control.set_following(self.state.control_follow_window)
             self.state.adb_path = dialog.adb_path_value()
             self.state.scrcpy_path = dialog.scrcpy_path_value()
             paths.set_overrides(self.state.adb_path, self.state.scrcpy_path)
@@ -1103,9 +1108,13 @@ class MainWindow(QMainWindow):
         control.close_requested.connect(self.stop_mirror)
         control.focus_requested.connect(self.focus_mirror)
         control.moved.connect(self._control_moved)
+        control.follow_toggled.connect(self._on_control_follow_toggled)
+        control.set_following(self.state.control_follow_window)
 
         pos: tuple[int, int] | None = None
-        if geometry and geometry.get("control_x") is not None:
+        # 跟随模式下控制条位置由窗口决定，记忆位置只在固定模式生效
+        if not self.state.control_follow_window and geometry \
+                and geometry.get("control_x") is not None:
             pos = (int(geometry["control_x"]), int(geometry.get("control_y", 80)))
         if pos is None:
             screen = QGuiApplication.primaryScreen()
@@ -1155,6 +1164,11 @@ class MainWindow(QMainWindow):
             control.set_status("已复制 · 窗口内 ⌘V")
 
     def _control_moved(self, window_id: str, x: int, y: int) -> None:
+        # 手动拖动 = 解除跟随，保持用户放的位置
+        control = self.controls.get(window_id)
+        if control is not None:
+            control.set_following(False)
+            control.set_status("已固定位置")
         window = self.processes.get(window_id)
         if not window or not self.state.remember_window_geometry:
             return
@@ -1162,18 +1176,94 @@ class MainWindow(QMainWindow):
         entry["control_x"], entry["control_y"] = int(x), int(y)
         self.persist()
 
-    # ---------- 记住每个应用的窗口位置 ----------
+    def _on_control_follow_toggled(self, window_id: str, following: bool) -> None:
+        control = self.controls.get(window_id)
+        if control is not None:
+            control.set_status("恢复跟随" if following else "已固定位置")
+        if following:
+            self._sample_geometry()      # 立刻贴回当前窗口位置
+
+    # ---------- 记住每个应用的窗口位置 / 控制条跟随 ----------
     def _sample_geometry(self) -> None:
         if not self.processes:
             self._geometry_timer.stop()
             return
+        pids: set[int] = set()
         for window in self.processes.values():
             pid = int(window.proc.processId() or 0)
-            if not pid or window.proc.state() == QProcess.NotRunning:
-                continue
-            bounds = nativewindow.window_bounds(pid)
+            if pid and window.proc.state() != QProcess.NotRunning:
+                pids.add(pid)
+        # 一次 CGWindowList 枚举覆盖所有投屏窗口，避免高频轮询放大 CPU 开销
+        bounds_map = nativewindow.window_bounds_map(pids)
+        for window in self.processes.values():
+            pid = int(window.proc.processId() or 0)
+            bounds = bounds_map.get(pid)
             if bounds:
+                window.missing_frames = 0
+                window.ever_visible = True
                 window.last_geometry = bounds
+                self._follow_control(window, bounds)
+            elif window.ever_visible:
+                # 窗口曾可见却连续读不到：多半是最小化或切到别的 Space，
+                # 隐藏控制条，恢复显示时由 _follow_control 重新显示
+                window.missing_frames += 1
+                if window.missing_frames >= 3:
+                    control = self.controls.get(window.id)
+                    if control is not None and control.isVisible():
+                        control.hide()
+
+    def _follow_control(self, window: MirrorWindow, bounds: dict) -> None:
+        """把控制条贴到 scrcpy 窗口上方；不跟随或已固定时只保证可见。"""
+        control = self.controls.get(window.id)
+        if control is None:
+            return
+        if not control.isVisible():
+            control.show()
+            control.raise_()
+        if not self.state.control_follow_window or not control.is_following():
+            return
+
+        win_w = int(bounds.get("width", 660))
+        win_h = int(bounds.get("height", 0))
+        control.set_content_width(win_w)
+        w, h = control.width(), control.height()
+        center = QPoint(int(bounds["x"] + win_w / 2), int(bounds["y"]))
+        screen = QGuiApplication.screenAt(center) or QGuiApplication.primaryScreen()
+        area = screen.availableGeometry() if screen else None
+        if area is None:
+            area = QApplication.primaryScreen().availableGeometry()
+        edge = 8
+        # 水平居中对齐窗口，再 clamp 到窗口所在屏幕
+        x = int(bounds["x"] + (win_w - w) / 2)
+        x = min(max(x, area.left() + edge),
+                max(area.left() + edge, area.right() - w - edge))
+        # 优先贴在窗口上方，放不下就贴到下方，避免遮住画面
+        y = int(bounds["y"]) - h - 6
+        if y < area.top() + edge:
+            y = int(bounds["y"]) + win_h + 6
+        y = min(max(y, area.top() + edge),
+                max(area.top() + edge, area.bottom() - h - edge))
+        y = self._avoid_control_overlap(window.id, x, y, w, h, area, edge)
+        if (control.x(), control.y()) != (x, y):
+            control.move(x, y)
+
+    def _avoid_control_overlap(self, window_id: str, x: int, y: int,
+                               w: int, h: int, area, edge: int) -> int:
+        """多个投屏窗口位置相近时，把后处理的控制条下移错开。"""
+        for _ in range(4):
+            clash = None
+            for other_id, other in self.controls.items():
+                if other_id == window_id or not other.isVisible():
+                    continue
+                ox, oy = other.x(), other.y()
+                if x < ox + other.width() and x + w > ox \
+                        and y < oy + other.height() and y + h > oy:
+                    clash = oy + other.height() + 4
+                    break
+            if clash is None:
+                break
+            y = clash
+        return min(y, max(area.top() + edge, area.bottom() - h - edge))
 
     def _save_window_geometry(self, window: MirrorWindow) -> None:
         if not self.state.remember_window_geometry:

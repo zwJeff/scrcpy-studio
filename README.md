@@ -32,14 +32,14 @@ macOS 桌面投屏工作台：集中管理 adb / scrcpy，用 **macOS Launchpad 
 
 | 产物 | 体积 | 说明 |
 |---|---|---|
-| [ScrcpyStudio-0.6.0-macOS-arm64.app.zip](dist/ScrcpyStudio-0.6.0-macOS-arm64.app.zip) | 约 56 MB | **解压即用**，Apple Silicon / macOS 12+ |
-| [ScrcpyStudio-0.6.0-macOS-arm64-source.tar.gz](dist/ScrcpyStudio-0.6.0-macOS-arm64-source.tar.gz) | 约 3 MB | 源码快照（含界面预览图与图标），按下方「环境准备」安装 |
-| [app.zip.sha256](dist/ScrcpyStudio-0.6.0-macOS-arm64.app.zip.sha256) · [source.tar.gz.sha256](dist/ScrcpyStudio-0.6.0-macOS-arm64-source.tar.gz.sha256) | — | 校验文件 |
+| [ScrcpyStudio-0.6.1-macOS-arm64.app.zip](dist/ScrcpyStudio-0.6.1-macOS-arm64.app.zip) | 约 56 MB | **解压即用**，Apple Silicon / macOS 12+ |
+| [ScrcpyStudio-0.6.1-macOS-arm64-source.tar.gz](dist/ScrcpyStudio-0.6.1-macOS-arm64-source.tar.gz) | 约 3 MB | 源码快照（含界面预览图与图标），按下方「环境准备」安装 |
+| [app.zip.sha256](dist/ScrcpyStudio-0.6.1-macOS-arm64.app.zip.sha256) · [source.tar.gz.sha256](dist/ScrcpyStudio-0.6.1-macOS-arm64-source.tar.gz.sha256) | — | 校验文件 |
 
 ```bash
 # 校验下载完整性
-shasum -a 256 -c ScrcpyStudio-0.6.0-macOS-arm64.app.zip.sha256
-# SHA256: 83484085ad7286737bf4af1414de1f7e753810f8a6785211e99aea081a744d3e
+shasum -a 256 -c ScrcpyStudio-0.6.1-macOS-arm64.app.zip.sha256
+# SHA256: 0b58c18169d117afe0566eb3b6a46425c64b3b3eb8a9e0acdfcdfd412444958c
 ```
 
 首次打开若被 Gatekeeper 拦截（未做正式 Apple 签名，只有 ad-hoc 签名）：
@@ -110,6 +110,7 @@ scrcpy 窗口是独立进程，无法在其中嵌入按钮，因此每个投屏�
 | `复制` | 放到 Mac 剪贴板，再到 scrcpy 窗口按 `⌘V`（中文兜底，支持任意语言） |
 | 窗口名 | 点击把该投屏窗口置前 |
 | `×` | 只关闭这个投屏窗口 |
+| `跟随` / `固定` | 切换控制条是否跟随投屏窗口贴合显示 |
 
 控制条随窗口创建 / 销毁，拖动后的位置也会按应用记住。
 
@@ -123,6 +124,28 @@ scrcpy 窗口是独立进程，无法在其中嵌入按钮，因此每个投屏�
 
 > 由于 `CGWindowList` 返回的是含标题栏的窗口外框，而 scrcpy 的 `--window-*` 设置的是内容区，
 > 恢复后可能有几十像素的轻微偏差；窗口仍可自由拖动，下次采样会自动收敛。
+
+### 控制条跟随投屏窗口
+
+设置 → 设备连接 的「控制条跟随投屏窗口贴合显示」默认开启（可关）。程序每 **120 ms**
+用一次 `CGWindowListCopyWindowInfo` **批量枚举所有投屏窗口**（单次约 1.7 ms，
+约占 1.4% 单核；不是每个窗口枚举一次），把控制条贴在对应 scrcpy 窗口上方：
+
+- 水平居中对齐窗口，上方空间不够时自动改贴下方，**不遮挡画面**；
+  位置 clamp 到窗口所在屏幕的可用区域，多个窗口位置相近时自动错开控制条。
+- 控制条宽度随窗口在 520–660 px 间自适应，窄窗口时自动收起次要按钮。
+- 窗口最小化或切到别的 Space 导致读不到窗口时，连续 3 帧后隐藏控制条；
+  窗口恢复显示时自动重新出现。
+- **手动拖动控制条即解除跟随**（按钮变「固定」），位置按应用记住；
+  点「跟随」按钮立刻贴回窗口。跟随模式下记忆的控制条位置不使用。
+
+> 配合「设置 → 投屏参数 → 窗口」里 scrcpy 自带的**无边框**和**置顶**效果更好：
+> 无边框后 CG 外框与内容区一致、没有标题栏偏差，置顶可减少「画面被盖住、
+> 控制条仍飘在最前」的视觉穿帮。这两项都是 scrcpy 原生参数，本版本没有额外打包依赖。
+
+> **边界**：这仍是两个进程、两类窗口（macOS 不允许跨进程设置父子窗口），
+> 所以快速拖动时控制条会有约 120 ms 的跟随滞后，`Cmd+Tab`、全屏 Spaces、
+> 系统最小化动画也不会与画面完全同步。要做到真正单窗口只能 fork 客户端或自研 Qt 客户端。
 
 ### 插 USB 自动启动 App
 
@@ -184,7 +207,7 @@ Android 的 shell 接口读不到 label / icon，程序会从设备端 APK 解�
 |---|---|
 | 投屏参数 | 投屏模式、分辨率上限、码率、帧率、编码器、音频、窗口样式、行为、录制、虚拟显示尺寸/DPI |
 | 外观 | 主题模式、Launchpad 网格列数 |
-| 设备连接 | USB 优先、插入自动投屏、连设备/投屏后自动进入悬浮球、记住窗口位置、USB → 无线端口、adb/scrcpy 路径与环境自检、插 USB 自启守护 |
+| 设备连接 | USB 优先、插入自动投屏、连设备/投屏后自动进入悬浮球、记住窗口位置、控制条跟随窗口、USB → 无线端口、adb/scrcpy 路径与环境自检、插 USB 自启守护 |
 
 设备栏也精简为「设备列表 + USB 投屏 + 无线连接」，重启 adb、USB 连接向导、配对、
 USB → 无线、断开等高级操作收进「⋯」菜单。
@@ -332,8 +355,8 @@ brew upgrade scrcpy                   # Homebrew 版本可能停留在 4.x
 - 「窗口置前 / 恢复最小化」属于尽力而为：macOS 可能拒绝非前台进程激活其他应用，
   取消 `AXMinimized` 的备用方式需要「系统设置 → 隐私与安全性 → 自动化 / 辅助功能」授权；
   失败时只会提示，不会重复投屏。
-- 控制条是独立的置顶小窗口，不会嵌入 scrcpy 窗口内部；同时投多个应用时会出现多条控制条，
-  可各自拖动并记住位置。
+- 控制条是独立的置顶小窗口，不会嵌入 scrcpy 窗口内部；跟随模式下约 120 ms 的滞后无法消除，
+  多个窗口位置相近时控制条会自动错开，也可各自拖动固定。
 - 应用图标已缩到原来的 60%（主界面 84→50 px、悬浮球面板 78→48 px），
   列宽与 7 列布局保持不变。
 
@@ -362,7 +385,7 @@ ui/panels.py            设备栏 / 应用舞台 / 参数表单 / 日志
 ui/settings_dialog.py   设置对话框（投屏 / 外观 / 连接）
 ui/mirrorbar.py         多投屏窗口状态条
 ui/floatball.py         悬浮球、跟随定位与半透明应用面板
-ui/nativewindow.py      macOS 原生窗口层级、进程置前、窗口位置读取
+ui/nativewindow.py      macOS 原生窗口层级、进程置前、单/批量窗口位置读取
 ui/mirrorcontrol.py     每个投屏窗口的控制条
 ui/inputpanel.py        设备输入面板
 ui/dialogs.py           无线连接 / 配对对话框
@@ -373,7 +396,7 @@ scripts/make_icon.py    App 图标生成（PNG + icns）
 scripts/usb_watch.sh    USB 自启守护脚本
 scripts/verify_connect.py  首次连接与刷新性能回归自检
 scripts/verify_mirror.py   投屏去重 / 角标 / 右键列表 / 自动进入悬浮球回归自检
-scripts/verify_control.py  控制条 / 几何记忆 / 左右键 / 图标尺寸回归自检
+scripts/verify_control.py  控制条 / 几何记忆 / 跟随 / 左右键 / 图标尺寸回归自检
 scripts/shot*.py        离屏截图自检脚本
 dist/                   构建产物（app.zip / source.tar.gz / SHA256）
 ```

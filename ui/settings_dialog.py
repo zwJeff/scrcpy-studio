@@ -121,6 +121,13 @@ class SettingsDialog(QDialog):
         self.remember_geometry.setChecked(state.remember_window_geometry)
         form.addRow("", self.remember_geometry)
 
+        self.control_follow = QCheckBox("控制条跟随投屏窗口贴合显示")
+        self.control_follow.setChecked(state.control_follow_window)
+        self.control_follow.setToolTip(
+            "控制条贴在对应 scrcpy 窗口上方；手动拖动控制条会暂时取消跟随"
+        )
+        form.addRow("", self.control_follow)
+
         self.usb_port = QSpinBox()
         self.usb_port.setRange(1, 65535)
         self.usb_port.setValue(state.usb_port)
@@ -230,6 +237,7 @@ class SettingsDialog(QDialog):
         self.auto_float.setChecked(False)
         self.auto_float_mirror.setChecked(True)
         self.remember_geometry.setChecked(True)
+        self.control_follow.setChecked(True)
         self.usb_port.setValue(5555)
         self.adb_path.clear()
         self.scrcpy_path.clear()
@@ -260,6 +268,9 @@ class SettingsDialog(QDialog):
 
     def remember_geometry_value(self) -> bool:
         return self.remember_geometry.isChecked()
+
+    def control_follow_value(self) -> bool:
+        return self.control_follow.isChecked()
 
     def usb_port_value(self) -> int:
         return self.usb_port.value()

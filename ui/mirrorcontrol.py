@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
 
 from . import style
 
-WIDTH = 606
+WIDTH = 660
+MIN_WIDTH = 520
+MAX_WIDTH = 660
 HEIGHT = 58
 
 # (显示符号, 完整说明, textinput.KEYCODE 里的键名)
@@ -69,12 +71,14 @@ class MirrorControl(QWidget):
     close_requested = Signal(str)                 # window_id
     focus_requested = Signal(str)                 # window_id
     moved = Signal(str, int, int)                 # window_id, x, y
+    follow_toggled = Signal(str, bool)            # window_id, 是否跟随
 
     def __init__(self, window_id: str, label: str, serial: str):
         super().__init__()
         self.window_id = window_id
         self.serial = serial
         self._label = label
+        self._following = True
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
         self._status_timer.setInterval(2400)
@@ -84,7 +88,8 @@ class MirrorControl(QWidget):
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
         )
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(WIDTH, HEIGHT)
+        self.setFixedWidth(WIDTH)
+        self.setFixedHeight(HEIGHT)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 3, 10, 6)
@@ -127,12 +132,19 @@ class MirrorControl(QWidget):
         self.send_btn.clicked.connect(self._send)
         row.addWidget(self.send_btn)
 
-        copy = QPushButton("复制")
-        copy.setObjectName("ControlAction")
-        copy.setFixedHeight(26)
-        copy.setToolTip("复制到剪贴板，再到投屏窗口按 ⌘V 粘贴（支持中文）")
-        copy.clicked.connect(self._copy)
-        row.addWidget(copy)
+        self.copy_btn = QPushButton("复制")
+        self.copy_btn.setObjectName("ControlAction")
+        self.copy_btn.setFixedHeight(26)
+        self.copy_btn.setToolTip("复制到剪贴板，再到投屏窗口按 ⌘V 粘贴（支持中文）")
+        self.copy_btn.clicked.connect(self._copy)
+        row.addWidget(self.copy_btn)
+
+        self.follow_btn = QPushButton("跟随")
+        self.follow_btn.setObjectName("ControlAction")
+        self.follow_btn.setFixedSize(52, 26)
+        self.follow_btn.setToolTip("点击切换：跟随投屏窗口 / 保持当前位置")
+        self.follow_btn.clicked.connect(self._toggle_follow)
+        row.addWidget(self.follow_btn)
 
         close = QPushButton("×")
         close.setObjectName("ControlClose")
@@ -142,6 +154,30 @@ class MirrorControl(QWidget):
         row.addWidget(close)
         outer.addLayout(row)
         self._apply_palette()
+
+    # ---------- 跟随 ----------
+    def _toggle_follow(self) -> None:
+        self.set_following(not self._following)
+        self.follow_toggled.emit(self.window_id, self._following)
+
+    def set_following(self, value: bool) -> None:
+        self._following = bool(value)
+        self.follow_btn.setText("跟随" if self._following else "固定")
+        self.follow_btn.setToolTip(
+            "当前跟随投屏窗口，点击改为固定位置"
+            if self._following else "当前固定位置，点击恢复跟随"
+        )
+
+    def is_following(self) -> bool:
+        return self._following
+
+    def set_content_width(self, width: int) -> None:
+        """窄窗口时收窄控制条并隐藏次要按钮，避免伸出窗口太多。"""
+        value = max(MIN_WIDTH, min(MAX_WIDTH, int(width)))
+        if value != self.width():
+            self.setFixedWidth(value)
+        self.copy_btn.setVisible(value >= 580)
+        self.title.setFixedWidth(100 if value < 580 else 116)
 
     # ---------- 交互 ----------
     def _send(self) -> None:

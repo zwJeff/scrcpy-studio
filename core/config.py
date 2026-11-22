@@ -150,6 +150,7 @@ class AppState:
 
     # 每个应用记住的投屏窗口几何与控制条位置
     remember_window_geometry: bool = True
+    control_follow_window: bool = True      # 控制条跟随投屏窗口贴合显示
     window_geometry: dict[str, dict] = field(default_factory=dict)
 
     # 悬浮球
@@ -210,6 +211,7 @@ def load_state() -> AppState:
     state.auto_float_on_connect = bool(raw.get("auto_float_on_connect", False))
     state.auto_float_on_mirror = bool(raw.get("auto_float_on_mirror", True))
     state.remember_window_geometry = bool(raw.get("remember_window_geometry", True))
+    state.control_follow_window = bool(raw.get("control_follow_window", True))
     geo = raw.get("window_geometry")
     state.window_geometry = dict(geo) if isinstance(geo, dict) else {}
     pos = raw.get("float_ball_pos") or []
@@ -253,6 +255,7 @@ def save_state(state: AppState) -> None:
         "auto_float_on_connect": state.auto_float_on_connect,
         "auto_float_on_mirror": state.auto_float_on_mirror,
         "remember_window_geometry": state.remember_window_geometry,
+        "control_follow_window": state.control_follow_window,
         "window_geometry": state.window_geometry,
         "float_ball_pos": state.float_ball_pos,
         "usb_autostart": state.usb_autostart,

@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-0.6.0}"
+VERSION="${VERSION:-0.6.1}"
 ARCH="$(uname -m)"
 NAME="ScrcpyStudio-${VERSION}-macOS-${ARCH}"
 PYROOT="${PYROOT:-$(awk -F' = ' '/^home /{print $2}' "$ROOT/.venv/pyvenv.cfg" | sed 's|/bin$||')}"

@@ -189,15 +189,13 @@ end tell'''
         return False
 
 
-def window_bounds(pid: int) -> dict | None:
-    """读取指定进程第一个正常窗口的位置尺寸（屏幕坐标，点）。
+def _collect_window_bounds(target_pids: set[int]) -> dict[int, dict]:
+    """一次 CGWindowList 枚举，收集目标进程各自面积最大的正常窗口。
 
-    用公开的 CGWindowListCopyWindowInfo，无需辅助功能权限。
-    返回 None 表示进程没有在屏窗口（未创建、已关闭或**已最小化**），
-    调用方可以据此判断是否需要走「恢复最小化」路径。
+    跟随轮询会高频调用，绝不能每个窗口单独枚举一次全屏窗口列表。
     """
-    if not _IS_MAC or pid <= 0:
-        return None
+    if not _IS_MAC or not target_pids:
+        return {}
     try:
         from ctypes import (
             Structure, byref, c_double, c_long, c_uint32,
@@ -233,9 +231,9 @@ def window_bounds(pid: int) -> dict | None:
 
         arr = cg.CGWindowListCopyWindowInfo(1, 0)   # onScreenOnly, kCGNullWindowID
         if not arr:
-            return None
+            return {}
+        result: dict[int, dict] = {}
         try:
-            best = None
             for index in range(cf.CFArrayGetCount(c_void_p(arr))):
                 info = cf.CFArrayGetValueAtIndex(c_void_p(arr), c_long(index))
                 if not info:
@@ -248,7 +246,10 @@ def window_bounds(pid: int) -> dict | None:
                 owner_pid = c_int(0)
                 # kCFNumberIntType = 9
                 if not cf.CFNumberGetValue(c_void_p(owner), c_long(9),
-                                           byref(owner_pid)) or owner_pid.value != pid:
+                                           byref(owner_pid)):
+                    continue
+                pid = owner_pid.value
+                if pid not in target_pids:
                     continue
                 layer_ref = cf.CFDictionaryGetValue(
                     c_void_p(info), c_void_p(keys["kCGWindowLayer"])
@@ -269,14 +270,38 @@ def window_bounds(pid: int) -> dict | None:
                     continue
                 if rect.w < 100 or rect.h < 100:
                     continue
-                if best is None or rect.w * rect.h > best["width"] * best["height"]:
-                    best = {"x": int(rect.x), "y": int(rect.y),
-                            "width": int(rect.w), "height": int(rect.h)}
-            return best
+                candidate = {"x": int(rect.x), "y": int(rect.y),
+                             "width": int(rect.w), "height": int(rect.h)}
+                current = result.get(pid)
+                if current is None or \
+                        candidate["width"] * candidate["height"] > \
+                        current["width"] * current["height"]:
+                    result[pid] = candidate
+            return result
         finally:
             cf.CFRelease(c_void_p(arr))
     except Exception:  # noqa: BLE001 - 原生调用失败一律降级
+        return {}
+
+
+def window_bounds(pid: int) -> dict | None:
+    """读取指定进程窗口的位置尺寸（屏幕坐标，点）。
+
+    用公开的 CGWindowListCopyWindowInfo，无需辅助功能权限。
+    返回 None 表示进程没有在屏窗口（未创建、已关闭或**已最小化**），
+    调用方可以据此判断是否需要走「恢复最小化」路径。
+    """
+    if not _IS_MAC or pid <= 0:
         return None
+    return _collect_window_bounds({int(pid)}).get(int(pid))
+
+
+def window_bounds_map(pids) -> dict[int, dict]:
+    """批量版本：一次枚举拿到多个进程的窗口位置，供高频跟随轮询使用。"""
+    if not _IS_MAC:
+        return {}
+    targets = {int(p) for p in pids if int(p) > 0}
+    return _collect_window_bounds(targets)
 
 
 def level_of(widget) -> int:
