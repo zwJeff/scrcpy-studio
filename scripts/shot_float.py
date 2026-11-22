@@ -17,6 +17,7 @@ from core import apkinfo  # noqa: E402
 from ui import style  # noqa: E402
 from ui.desktop import AppData  # noqa: E402
 from ui.floatball import FloatController  # noqa: E402
+from ui.mirrorcontrol import MirrorControl  # noqa: E402
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "dark"
 CATEGORIES = ["social", "media", "game", "shopping", "finance", "tools", "other"]
@@ -66,18 +67,25 @@ def main() -> int:
     controller.panel.ensure_built()   # 面板隐藏时数据延迟构建，截图前显式触发
     controller.panel.show()
 
-    # 悬停时出现的小列表（截图里固定放到小球下方，避免与应用面板重叠）
+    # 右键出现的「已投屏窗口」列表（截图里固定放到小球下方，避免与应用面板重叠）
     controller.window_list.move(60, 140)
     controller.window_list.show()
 
-    canvas = QImage(1240, 860, QImage.Format_ARGB32_Premultiplied)
+    # 每个投屏窗口配套的控制条示意
+    control = MirrorControl("demo", "WPS Office", "DEVICE1")
+    control.edit.setText("季度汇报")
+    control.show()
+
+    canvas = QImage(1240, 880, QImage.Format_ARGB32_Premultiplied)
     canvas.fill(Qt.transparent)
     painter = QPainter(canvas)
     style.paint_wallpaper(painter, canvas.rect())
     painter.drawImage(300, 150, render(controller.panel))
     painter.drawImage(60, 140, render(controller.window_list))
+    painter.drawImage(300, 792, render(control))
     painter.drawImage(60, 60, render(controller.ball))
     painter.end()
+    control.hide()
 
     target = ROOT / (f"screenshot-float-{MODE}.png" if MODE != "dark"
                      else "screenshot-float.png")

@@ -16,9 +16,9 @@ from core.categories import CATEGORIES, CATEGORY_ORDER, color_of, label_of
 from . import style
 from .desktop import AppData
 
-_ICON = 84
-_CELL_W = 128
-_CELL_H = 118
+_ICON = 50                 # 原 84 的 60%
+_CELL_W = 128              # 列宽不变，保持 7 列
+_CELL_H = 100              # 同步收紧上下留白
 _PIX_CACHE: dict[tuple[str, int], QPixmap] = {}
 
 
@@ -96,8 +96,8 @@ class LaunchpadIcon(QFrame):
         self._running = running
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(2, 4, 2, 2)
-        lay.setSpacing(7)
+        lay.setContentsMargins(2, 6, 2, 2)
+        lay.setSpacing(5)
 
         self.icon_label = QLabel()
         self.icon_label.setFixedSize(_ICON, _ICON)

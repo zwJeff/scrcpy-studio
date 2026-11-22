@@ -32,14 +32,14 @@ macOS 桌面投屏工作台：集中管理 adb / scrcpy，用 **macOS Launchpad 
 
 | 产物 | 体积 | 说明 |
 |---|---|---|
-| [ScrcpyStudio-0.5.0-macOS-arm64.app.zip](dist/ScrcpyStudio-0.5.0-macOS-arm64.app.zip) | 约 56 MB | **解压即用**，Apple Silicon / macOS 12+ |
-| [ScrcpyStudio-0.5.0-macOS-arm64-source.tar.gz](dist/ScrcpyStudio-0.5.0-macOS-arm64-source.tar.gz) | 约 3 MB | 源码快照（含界面预览图与图标），按下方「环境准备」安装 |
-| [app.zip.sha256](dist/ScrcpyStudio-0.5.0-macOS-arm64.app.zip.sha256) · [source.tar.gz.sha256](dist/ScrcpyStudio-0.5.0-macOS-arm64-source.tar.gz.sha256) | — | 校验文件 |
+| [ScrcpyStudio-0.6.0-macOS-arm64.app.zip](dist/ScrcpyStudio-0.6.0-macOS-arm64.app.zip) | 约 56 MB | **解压即用**，Apple Silicon / macOS 12+ |
+| [ScrcpyStudio-0.6.0-macOS-arm64-source.tar.gz](dist/ScrcpyStudio-0.6.0-macOS-arm64-source.tar.gz) | 约 3 MB | 源码快照（含界面预览图与图标），按下方「环境准备」安装 |
+| [app.zip.sha256](dist/ScrcpyStudio-0.6.0-macOS-arm64.app.zip.sha256) · [source.tar.gz.sha256](dist/ScrcpyStudio-0.6.0-macOS-arm64-source.tar.gz.sha256) | — | 校验文件 |
 
 ```bash
 # 校验下载完整性
-shasum -a 256 -c ScrcpyStudio-0.5.0-macOS-arm64.app.zip.sha256
-# SHA256: a6d111496ba26050101f72ff8d6393223ca133b15c1f7c2f547ba1c0c368a009
+shasum -a 256 -c ScrcpyStudio-0.6.0-macOS-arm64.app.zip.sha256
+# SHA256: 83484085ad7286737bf4af1414de1f7e753810f8a6785211e99aea081a744d3e
 ```
 
 首次打开若被 Gatekeeper 拦截（未做正式 Apple 签名，只有 ad-hoc 签名）：
@@ -65,8 +65,9 @@ xattr -cr ~/Downloads/ScrcpyStudio.app   # 或在 Finder 里右键 App → 打�
 ### 悬浮球模式
 
 点工具栏「◉」、菜单「进入悬浮球模式」或 `⌘⇧F` 即可收起主窗口，桌面只留一个
-始终最前的圆形悬浮球（显示 App 图标）。单击展开半透明 Launchpad 风格应用面板，
-再点一次或点击别处收起；拖动小球可换位置，位置会记住，面板会自动跟着小球选择展开方向。
+始终最前的圆形悬浮球（显示 App 图标）。**左键**展开半透明 Launchpad 风格应用面板，
+再点一次或点击别处收起；**右键**切换「已投屏窗口」列表；拖动小球可换位置，
+位置会记住，面板会自动跟着小球选择展开方向。
 
 > **置顶实现**：除 Qt 的置顶 flag 外，还会把悬浮球与面板的 macOS 原生窗口层级设为
 > `NSScreenSaverWindowLevel+1`，并允许跨 Spaces / 全屏辅助显示；每秒重新断言一次，
@@ -76,17 +77,17 @@ xattr -cr ~/Downloads/ScrcpyStudio.app   # 或在 Finder 里右键 App → 打�
   **始终保证 7 列 × 4 行的最小网格完整可见**（屏幕较小时自动缩小单元尺寸）。
 - 面板包含标题、设备名 / 应用数、分类胶囊、分隔线与 7 列图标网格；
   **单击图标即在新窗口投屏**，仍可同时打开多个应用。
-- 右键小球（或面板「⋯」）：展开 / 收起、重新读取应用列表、显示主窗口、设置、
-  退出悬浮球模式、退出程序。
+- 已投屏窗口列表底部的「⋯ 更多操作」（或应用面板「⋯」）：展开 / 收起、
+  重新读取应用列表、显示主窗口、设置、退出悬浮球模式、退出程序。
 - 设置 → 设备连接 勾选「连接设备后自动进入悬浮球模式」后，
   设备从离线变在线时会自动收起主窗口并切到悬浮球形态。
 
 **投屏窗口管理（悬浮球形态）**
 
 - **数字角标**：球右上角的红色数字显示当前投屏窗口数，随窗口启动/退出实时更新。
-- **悬停小列表**：鼠标停在球上（应用面板未展开时）会在旁边弹出半透明「正在投屏」
-  小列表，列出每个窗口；**点击条目即把该窗口切到前台**。鼠标移入列表不会消失，
-  移开后自动收起。单击球体本身仍是原来的展开 / 收起应用面板逻辑。
+- **右键已投屏列表**：右键小球弹出半透明「已投屏窗口」列表，与应用面板互斥，
+  再次右键或点击条目后收起（不再靠悬停自动弹出，避免误触）。
+  **点击条目即把对应窗口置顶显示**；若窗口已最小化，会尝试取消 `AXMinimized` 恢复显示。
 - **重复点击不重复投屏**：点击已在投屏中的应用不会再启动第二个 scrcpy 进程，
   而是尝试把已有窗口激活到前台，并收起应用面板；整屏投屏同理。
 - **投屏成功后自动进入悬浮球模式并收起应用面板**（默认开启，
@@ -96,6 +97,32 @@ xattr -cr ~/Downloads/ScrcpyStudio.app   # 或在 Finder 里右键 App → 打�
 > 会再静默尝试 System Events。即使置前未生效，**也绝不会重复启动投屏**，
 > 日志会提示手动点击该窗口，必要时在「系统设置 → 隐私与安全性 → 自动化」授权。
 
+
+### 每个投屏窗口的控制条
+
+scrcpy 窗口是独立进程，无法在其中嵌入按钮，因此每个投屏窗口都会自动配一个
+**始终置顶、可拖动**的紧凑控制条（截图底部那条）：
+
+| 控件 | 作用 |
+|---|---|
+| `◀` `☰` `⌂` `▤` | 向手机发送返回 / 菜单 / 主屏 / 最近任务按键（`adb shell input keyevent`） |
+| 输入框 + `发送` | 把文字推送到手机当前获得焦点的输入框（复用「设备输入」的 ASCII / ADBKeyBoard 通道） |
+| `复制` | 放到 Mac 剪贴板，再到 scrcpy 窗口按 `⌘V`（中文兜底，支持任意语言） |
+| 窗口名 | 点击把该投屏窗口置前 |
+| `×` | 只关闭这个投屏窗口 |
+
+控制条随窗口创建 / 销毁，拖动后的位置也会按应用记住。
+
+### 记住每个应用的窗口位置
+
+设置 → 设备连接 的「记住每个应用的投屏窗口位置与尺寸」默认开启。程序每 2 秒用
+`CGWindowListCopyWindowInfo` 读取一次 scrcpy 窗口的实际位置与尺寸（公开 API，
+不需要屏幕录制 / 辅助功能权限），窗口关闭时按**包名**写入 `config.json`。
+下次投同一个应用时会自动带上 `--window-x/y/width/height`，并恢复控制条位置；
+整屏投屏用 `__screen__` 作为键。关闭该开关即不再记忆、也不再恢复。
+
+> 由于 `CGWindowList` 返回的是含标题栏的窗口外框，而 scrcpy 的 `--window-*` 设置的是内容区，
+> 恢复后可能有几十像素的轻微偏差；窗口仍可自由拖动，下次采样会自动收敛。
 
 ### 插 USB 自动启动 App
 
@@ -157,7 +184,7 @@ Android 的 shell 接口读不到 label / icon，程序会从设备端 APK 解�
 |---|---|
 | 投屏参数 | 投屏模式、分辨率上限、码率、帧率、编码器、音频、窗口样式、行为、录制、虚拟显示尺寸/DPI |
 | 外观 | 主题模式、Launchpad 网格列数 |
-| 设备连接 | USB 优先、插入自动投屏、连设备/投屏后自动进入悬浮球、USB → 无线端口、adb/scrcpy 路径与环境自检、插 USB 自启守护 |
+| 设备连接 | USB 优先、插入自动投屏、连设备/投屏后自动进入悬浮球、记住窗口位置、USB → 无线端口、adb/scrcpy 路径与环境自检、插 USB 自启守护 |
 
 设备栏也精简为「设备列表 + USB 投屏 + 无线连接」，重启 adb、USB 连接向导、配对、
 USB → 无线、断开等高级操作收进「⋯」菜单。
@@ -170,7 +197,7 @@ USB → 无线、断开等高级操作收进「⋯」菜单。
 - 顶部「正在投屏」条列出所有窗口，每个 chip 可单独关闭，右侧「全部关闭」一键收尾
 - 正在投屏的应用在网格里有绿点角标；进程退出自动回收、刷新状态
 - 同一台设备的**整屏投屏只允许一个**（避免重复），但不影响继续打开单应用窗口
-- **同一应用重复点击只把已有窗口置前，不会新开窗口**；悬浮球角标与悬停列表实时同步
+- **同一应用重复点击只把已有窗口置前，不会新开窗口**；悬浮球角标与右键列表实时同步
 - 退出程序时自动终止所有投屏进程
 
 ### 设备输入
@@ -302,8 +329,13 @@ brew upgrade scrcpy                   # Homebrew 版本可能停留在 4.x
 - 悬浮球使用高于系统屏保的原生窗口层级，会盖住菜单栏与部分系统浮层；
   展开的应用面板同样是置顶窗口，点击别处即收起。
 - 「插 USB 自动启动」依赖 launchd 守护轮询（3 秒间隔），拔插后需等待一个检查周期。
-- 「窗口置前」属于尽力而为：macOS 可能拒绝非前台进程激活其他应用，
-  备用方式首次可能要求自动化授权；失败时只会提示，不会重复投屏。
+- 「窗口置前 / 恢复最小化」属于尽力而为：macOS 可能拒绝非前台进程激活其他应用，
+  取消 `AXMinimized` 的备用方式需要「系统设置 → 隐私与安全性 → 自动化 / 辅助功能」授权；
+  失败时只会提示，不会重复投屏。
+- 控制条是独立的置顶小窗口，不会嵌入 scrcpy 窗口内部；同时投多个应用时会出现多条控制条，
+  可各自拖动并记住位置。
+- 应用图标已缩到原来的 60%（主界面 84→50 px、悬浮球面板 78→48 px），
+  列宽与 7 列布局保持不变。
 
 ## 目录结构
 
@@ -330,7 +362,8 @@ ui/panels.py            设备栏 / 应用舞台 / 参数表单 / 日志
 ui/settings_dialog.py   设置对话框（投屏 / 外观 / 连接）
 ui/mirrorbar.py         多投屏窗口状态条
 ui/floatball.py         悬浮球、跟随定位与半透明应用面板
-ui/nativewindow.py      macOS 原生窗口层级（始终置顶）
+ui/nativewindow.py      macOS 原生窗口层级、进程置前、窗口位置读取
+ui/mirrorcontrol.py     每个投屏窗口的控制条
 ui/inputpanel.py        设备输入面板
 ui/dialogs.py           无线连接 / 配对对话框
 ui/usbdialog.py         USB 连接向导
@@ -339,7 +372,8 @@ scripts/build_app.sh    自包含 App 构建脚本
 scripts/make_icon.py    App 图标生成（PNG + icns）
 scripts/usb_watch.sh    USB 自启守护脚本
 scripts/verify_connect.py  首次连接与刷新性能回归自检
-scripts/verify_mirror.py   投屏去重 / 角标 / hover 列表 / 自动进入悬浮球回归自检
+scripts/verify_mirror.py   投屏去重 / 角标 / 右键列表 / 自动进入悬浮球回归自检
+scripts/verify_control.py  控制条 / 几何记忆 / 左右键 / 图标尺寸回归自检
 scripts/shot*.py        离屏截图自检脚本
 dist/                   构建产物（app.zip / source.tar.gz / SHA256）
 ```

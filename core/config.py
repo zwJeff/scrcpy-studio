@@ -49,7 +49,9 @@ class MirrorConfig:
         return MirrorConfig(**asdict(self))
 
 
-def build_args(cfg: MirrorConfig, serial: str | None, scrcpy_path: str | None = None) -> list[str]:
+def build_args(cfg: MirrorConfig, serial: str | None,
+               scrcpy_path: str | None = None,
+               geometry: dict | None = None) -> list[str]:
     scrcpy = paths.resolve_scrcpy(scrcpy_path)
     args: list[str] = [scrcpy]
     if serial:
@@ -90,6 +92,14 @@ def build_args(cfg: MirrorConfig, serial: str | None, scrcpy_path: str | None = 
         args.append("-f")
     if cfg.window_title.strip():
         args += ["--window-title", cfg.window_title.strip()]
+    # 按应用记住的窗口位置/尺寸（geometry: x, y, width, height）
+    if geometry and not cfg.fullscreen:
+        if geometry.get("x") is not None and geometry.get("y") is not None:
+            args += ["--window-x", str(int(geometry["x"])),
+                     "--window-y", str(int(geometry["y"]))]
+        if geometry.get("width") and geometry.get("height"):
+            args += ["--window-width", str(int(geometry["width"])),
+                     "--window-height", str(int(geometry["height"]))]
 
     if cfg.turn_screen_off:
         args.append("-S")
@@ -137,6 +147,10 @@ class AppState:
     launchpad_columns: int = 0            # 0 = 按窗口宽度自适应
     console_visible: bool = False
     input_visible: bool = True
+
+    # 每个应用记住的投屏窗口几何与控制条位置
+    remember_window_geometry: bool = True
+    window_geometry: dict[str, dict] = field(default_factory=dict)
 
     # 悬浮球
     auto_float_on_connect: bool = False   # 设备上线后自动进入悬浮球模式
@@ -195,6 +209,9 @@ def load_state() -> AppState:
         state.launchpad_columns = 0
     state.auto_float_on_connect = bool(raw.get("auto_float_on_connect", False))
     state.auto_float_on_mirror = bool(raw.get("auto_float_on_mirror", True))
+    state.remember_window_geometry = bool(raw.get("remember_window_geometry", True))
+    geo = raw.get("window_geometry")
+    state.window_geometry = dict(geo) if isinstance(geo, dict) else {}
     pos = raw.get("float_ball_pos") or []
     state.float_ball_pos = [int(v) for v in pos[:2]] if len(pos) >= 2 else []
     state.usb_autostart = bool(raw.get("usb_autostart", False))
@@ -235,6 +252,8 @@ def save_state(state: AppState) -> None:
         "input_visible": state.input_visible,
         "auto_float_on_connect": state.auto_float_on_connect,
         "auto_float_on_mirror": state.auto_float_on_mirror,
+        "remember_window_geometry": state.remember_window_geometry,
+        "window_geometry": state.window_geometry,
         "float_ball_pos": state.float_ball_pos,
         "usb_autostart": state.usb_autostart,
         "auto_mirror_usb": state.auto_mirror_usb,

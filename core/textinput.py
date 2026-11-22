@@ -24,6 +24,7 @@ ADBKEYBOARD_IME = "com.android.adbkeyboard/.AdbIME"
 KEYCODE = {
     "enter": 66, "backspace": 67, "tab": 61, "esc": 111,
     "home": 3, "back": 4, "up": 19, "down": 20, "left": 21, "right": 22,
+    "menu": 82, "recents": 187, "volume_up": 24, "volume_down": 25,
 }
 
 

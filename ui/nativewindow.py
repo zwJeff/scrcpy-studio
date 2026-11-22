@@ -20,6 +20,7 @@ _IS_MAC = sys.platform == "darwin"
 BALL_LEVEL = 1001
 PANEL_LEVEL = 1002
 LIST_LEVEL = 1003
+CONTROL_LEVEL = 1004
 
 # NSWindowCollectionBehavior：
 # CanJoinAllSpaces(1<<0) | Stationary(1<<4) | IgnoresCycle(1<<6)
@@ -162,7 +163,7 @@ def focus_process(pid: int) -> bool:
 
 
 def focus_process_fallback(pid: int) -> bool:
-    """备用置前：通过 System Events 按 unix id 找到进程并设为 frontmost。
+    """备用置前：System Events 按 unix id 找到进程，设为前台并取消窗口最小化。
 
     需要 macOS「自动化 / 辅助功能」授权；未授权时静默失败，不弹错误框。
     供后台线程调用，避免阻塞界面。
@@ -171,10 +172,14 @@ def focus_process_fallback(pid: int) -> bool:
         return False
     import subprocess
 
-    script = (
-        'tell application "System Events" to set frontmost of '
-        f'(first application process whose unix id is {int(pid)}) to true'
-    )
+    script = f'''tell application "System Events"
+  tell (first application process whose unix id is {int(pid)})
+    set frontmost to true
+    try
+      set value of attribute "AXMinimized" of window 1 to false
+    end try
+  end tell
+end tell'''
     try:
         result = subprocess.run(
             ["osascript", "-e", script], capture_output=True, timeout=2.5,
@@ -182,6 +187,96 @@ def focus_process_fallback(pid: int) -> bool:
         return result.returncode == 0
     except Exception:  # noqa: BLE001
         return False
+
+
+def window_bounds(pid: int) -> dict | None:
+    """读取指定进程第一个正常窗口的位置尺寸（屏幕坐标，点）。
+
+    用公开的 CGWindowListCopyWindowInfo，无需辅助功能权限。
+    返回 None 表示进程没有在屏窗口（未创建、已关闭或**已最小化**），
+    调用方可以据此判断是否需要走「恢复最小化」路径。
+    """
+    if not _IS_MAC or pid <= 0:
+        return None
+    try:
+        from ctypes import (
+            Structure, byref, c_double, c_long, c_uint32,
+        )
+
+        class _Rect(Structure):
+            _fields_ = [("x", c_double), ("y", c_double),
+                        ("w", c_double), ("h", c_double)]
+
+        cg = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
+        )
+        cf = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+        )
+        cg.CGWindowListCopyWindowInfo.restype = c_void_p
+        cg.CGWindowListCopyWindowInfo.argtypes = [c_uint32, c_uint32]
+        cf.CFArrayGetCount.restype = c_long
+        cf.CFArrayGetCount.argtypes = [c_void_p]
+        cf.CFArrayGetValueAtIndex.restype = c_void_p
+        cf.CFArrayGetValueAtIndex.argtypes = [c_void_p, c_long]
+        cf.CFDictionaryGetValue.restype = c_void_p
+        cf.CFDictionaryGetValue.argtypes = [c_void_p, c_void_p]
+        cf.CFNumberGetValue.restype = c_bool
+        cf.CFNumberGetValue.argtypes = [c_void_p, c_long, c_void_p]
+        cf.CFRelease.argtypes = [c_void_p]
+        cg.CGRectMakeWithDictionaryRepresentation.restype = c_bool
+        cg.CGRectMakeWithDictionaryRepresentation.argtypes = [c_void_p, c_void_p]
+
+        keys = {}
+        for name in ("kCGWindowOwnerPID", "kCGWindowBounds", "kCGWindowLayer"):
+            keys[name] = c_void_p.in_dll(cg, name).value
+
+        arr = cg.CGWindowListCopyWindowInfo(1, 0)   # onScreenOnly, kCGNullWindowID
+        if not arr:
+            return None
+        try:
+            best = None
+            for index in range(cf.CFArrayGetCount(c_void_p(arr))):
+                info = cf.CFArrayGetValueAtIndex(c_void_p(arr), c_long(index))
+                if not info:
+                    continue
+                owner = cf.CFDictionaryGetValue(
+                    c_void_p(info), c_void_p(keys["kCGWindowOwnerPID"])
+                )
+                if not owner:
+                    continue
+                owner_pid = c_int(0)
+                # kCFNumberIntType = 9
+                if not cf.CFNumberGetValue(c_void_p(owner), c_long(9),
+                                           byref(owner_pid)) or owner_pid.value != pid:
+                    continue
+                layer_ref = cf.CFDictionaryGetValue(
+                    c_void_p(info), c_void_p(keys["kCGWindowLayer"])
+                )
+                layer = c_int(0)
+                if layer_ref:
+                    cf.CFNumberGetValue(c_void_p(layer_ref), c_long(9), byref(layer))
+                if layer.value != 0:
+                    continue
+                bounds_ref = cf.CFDictionaryGetValue(
+                    c_void_p(info), c_void_p(keys["kCGWindowBounds"])
+                )
+                if not bounds_ref:
+                    continue
+                rect = _Rect()
+                if not cg.CGRectMakeWithDictionaryRepresentation(
+                        c_void_p(bounds_ref), byref(rect)):
+                    continue
+                if rect.w < 100 or rect.h < 100:
+                    continue
+                if best is None or rect.w * rect.h > best["width"] * best["height"]:
+                    best = {"x": int(rect.x), "y": int(rect.y),
+                            "width": int(rect.w), "height": int(rect.h)}
+            return best
+        finally:
+            cf.CFRelease(c_void_p(arr))
+    except Exception:  # noqa: BLE001 - 原生调用失败一律降级
+        return None
 
 
 def level_of(widget) -> int:

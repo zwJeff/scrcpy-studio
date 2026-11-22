@@ -66,6 +66,8 @@ def main() -> int:
          patch("ui.main_window.build_args",
                return_value=["scrcpy", "-s", "DEVICE1"]), \
          patch.object(paths, "supports_new_display", return_value=True), \
+         patch("ui.main_window.nativewindow.window_bounds",
+               return_value={"x": 10, "y": 10, "width": 400, "height": 600}), \
          patch("ui.main_window.nativewindow.focus_process",
                return_value=True) as focus:
         for pkg in ("com.a", "com.b", "com.c"):
@@ -94,22 +96,20 @@ def main() -> int:
               w.float_controller.ball._count == 3,
               str(w.float_controller.ball._count))
 
-    print("=== hover 小列表 ===")
+    print("=== 右键已投屏列表 ===")
     c = w.float_controller
     c.show()
-    c._on_hover(True)
-    c._show_window_list()
-    check("悬停后列表可见", c.window_list.isVisible())
+    c.toggle_window_list()
+    check("右键后列表可见", c.window_list.isVisible())
     check("列表跟随球定位", c.window_list.x() >= 0 and c.window_list.y() >= 0)
     seen = []
     c.focus_requested.connect(lambda value: seen.append(value))
     c.window_list.rows.itemAt(0).widget().click()
     check("点击条目发出置前请求", len(seen) == 1, str(seen))
     check("点击后列表收起", not c.window_list.isVisible())
-    c._on_hover(False)
-    c._schedule_hide_list()
-    c._hide_window_list()
-    check("鼠标离开后列表可收起", not c.window_list.isVisible())
+    c.toggle_window_list()
+    c.toggle_window_list()
+    check("再次右键可收起列表", not c.window_list.isVisible())
 
     print("=== 单击悬浮球仍展开应用面板 ===")
     c.ball.hovered.emit(False)

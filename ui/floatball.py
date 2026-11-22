@@ -53,7 +53,7 @@ class FloatBall(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFixedSize(BALL_SIZE, BALL_SIZE)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("单击展开应用 · 悬停看投屏窗口 · 拖动可移动 · 右键更多")
+        self.setToolTip("左键展开应用列表 · 右键查看已投屏窗口 · 拖动可移动")
         self._hover = False
         self._count = 0
         self._press_pos: QPoint | None = None
@@ -152,8 +152,8 @@ class FloatAppIcon(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 2, 0, 2)
-        lay.setSpacing(6)
+        lay.setContentsMargins(0, 4, 0, 2)
+        lay.setSpacing(4)
         self.icon_label = QLabel()
         self.icon_label.setFixedSize(icon_size, icon_size)
         self.icon_label.setPixmap(app_pixmap(app, icon_size))
@@ -165,9 +165,9 @@ class FloatAppIcon(QWidget):
         metrics = self.name_label.fontMetrics()
         self.name_label.setText(metrics.elidedText(app.name, Qt.ElideRight, cell_w - 8))
         self.name_label.setStyleSheet(
-            "font-size:12px; color:#F2F7FF; background:transparent;"
+            "font-size:11px; color:#F2F7FF; background:transparent;"
             if style.is_dark() else
-            "font-size:12px; color:#1B2534; background:transparent;"
+            "font-size:11px; color:#1B2534; background:transparent;"
         )
         lay.addWidget(self.name_label, 0, Qt.AlignHCenter)
         lay.addStretch(1)
@@ -405,11 +405,11 @@ class FloatPanel(QWidget):
     def _cell_metrics(self) -> tuple[int, int, int]:
         """固定 7 列；至少 4 行在可视区内完整显示。"""
         cell_w = max(64, (self.width() - 52) // GRID_COLS)
-        icon_size = min(78, cell_w - 16)
+        icon_size = min(48, cell_w - 16)        # 原 78 的 60%
         grid_h = max(240, self.scroll.viewport().height())
-        max_cell_h = max(74, grid_h // GRID_MIN_ROWS)
-        cell_h = min(icon_size + 26, max_cell_h)
-        icon_size = min(icon_size, max(42, cell_h - 26))
+        max_cell_h = max(64, grid_h // GRID_MIN_ROWS)
+        cell_h = min(icon_size + 30, max_cell_h)
+        icon_size = min(icon_size, max(28, cell_h - 30))
         return cell_w, cell_h, icon_size
 
     def _clear_grid(self) -> None:
@@ -462,8 +462,9 @@ ROW_H = 34
 
 
 class FloatWindowList(QWidget):
-    """悬停悬浮球时展示的「正在投屏」小列表；点击条目把对应窗口置前。"""
+    """右键悬浮球时展示的「已投屏窗口」小列表；点击条目把对应窗口置前。"""
     focus_requested = Signal(str)
+    more_requested = Signal()
     entered = Signal()
     left = Signal()
 
@@ -479,15 +480,20 @@ class FloatWindowList(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 9, 12, 9)
         outer.setSpacing(3)
-        self.title = QLabel("正在投屏")
+        self.title = QLabel("已投屏窗口 · 0")
         self.title.setObjectName("FloatListTitle")
         outer.addWidget(self.title)
         self.rows = QVBoxLayout()
         self.rows.setSpacing(2)
         outer.addLayout(self.rows)
-        self.hint = QLabel("点击名称切换到该投屏窗口")
+        self.hint = QLabel("点击名称置顶显示（最小化时自动恢复）")
         self.hint.setObjectName("FloatListHint")
         outer.addWidget(self.hint)
+        self.more = QPushButton("⋯ 更多操作")
+        self.more.setObjectName("FloatWinRow")
+        self.more.setFixedHeight(26)
+        self.more.clicked.connect(lambda: self.more_requested.emit())
+        outer.addWidget(self.more)
         self.set_windows([])
 
     def set_windows(self, windows: list[tuple[str, str]]) -> None:
@@ -497,7 +503,13 @@ class FloatWindowList(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
-        self.title.setText(f"正在投屏 · {len(self._windows)}")
+        self.title.setText(f"已投屏窗口 · {len(self._windows)}")
+        if not self._windows:
+            empty = QLabel("暂无投屏窗口 · 先在应用列表里点一个应用")
+            empty.setObjectName("FloatListHint")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setFixedHeight(ROW_H)
+            self.rows.addWidget(empty)
         for window_id, label in self._windows:
             btn = QPushButton(label)
             btn.setObjectName("FloatWinRow")
@@ -507,8 +519,9 @@ class FloatWindowList(QWidget):
                 lambda _=False, wid=window_id: self.focus_requested.emit(wid)
             )
             self.rows.addWidget(btn)
-        height = 20 + 3 + len(self._windows) * (ROW_H + 2) + 3 + 16 + 18
-        self.setFixedHeight(max(72, height))
+        rows = max(1, len(self._windows))
+        height = 20 + 3 + rows * (ROW_H + 2) + 3 + 16 + 4 + 26 + 18
+        self.setFixedHeight(max(88, height))
         self._apply_palette()
 
     def set_theme(self) -> None:
@@ -578,21 +591,12 @@ class FloatController(QObject):
         self.ball.clicked.connect(self.toggle_panel)
         self.ball.moved.connect(self._on_ball_moved)
         self.ball.hovered.connect(self._on_hover)
-        self.ball.context_requested.connect(self._show_ball_menu)
+        # 左键 → 应用列表面板；右键 → 已投屏窗口列表（不再靠悬停自动弹出）
+        self.ball.context_requested.connect(self.toggle_window_list)
         self.panel.launch_requested.connect(self.launch_requested)
         self.panel.menu_requested.connect(self._show_panel_menu)
         self.window_list.focus_requested.connect(self._on_list_focus)
-
-        self._show_list_timer = QTimer(self)
-        self._show_list_timer.setSingleShot(True)
-        self._show_list_timer.setInterval(160)
-        self._show_list_timer.timeout.connect(self._show_window_list)
-        self._hide_list_timer = QTimer(self)
-        self._hide_list_timer.setSingleShot(True)
-        self._hide_list_timer.setInterval(280)
-        self._hide_list_timer.timeout.connect(self._hide_window_list)
-        self.window_list.entered.connect(self._hide_list_timer.stop)
-        self.window_list.left.connect(self._schedule_hide_list)
+        self.window_list.more_requested.connect(self._show_more_menu)
 
         # macOS 会在切换 Spaces / 别的 App 全屏 / 本 App 失活时重排窗口层级，
         # 周期性重新断言原生层级，保证悬浮球始终最前。
@@ -681,31 +685,28 @@ class FloatController(QObject):
             self.place_window_list()
 
     def _on_hover(self, inside: bool) -> None:
+        # 悬停只影响绘制状态；已投屏列表改为右键显式切换，避免误触和自动消失
         self._ball_hover = inside
-        if inside:
-            self._hide_list_timer.stop()
-            if not self.panel.isVisible() and self._running_windows:
-                self._show_list_timer.start()
-        else:
-            self._show_list_timer.stop()
-            self._schedule_hide_list()
 
-    def _schedule_hide_list(self) -> None:
+    def toggle_window_list(self, *_args) -> None:
+        """右键：切换「已投屏窗口」列表，与应用列表面板互斥。"""
         if self.window_list.isVisible():
-            self._hide_list_timer.start()
+            self._hide_window_list()
+            return
+        self.panel.hide()
+        self.show_window_list()
 
-    def _show_window_list(self) -> None:
-        if not self._ball_hover or self.panel.isVisible() \
-                or not self._running_windows or not self.ball.isVisible():
+    def show_window_list(self) -> None:
+        if not self.ball.isVisible():
             return
         self.place_window_list()
         self.window_list.show()
         self.window_list.raise_()
-        QTimer.singleShot(0, self._assert_on_top)
+        self._pin_all()
+        for delay in (0, 120, 400):
+            QTimer.singleShot(delay, self._assert_on_top)
 
     def _hide_window_list(self) -> None:
-        self._show_list_timer.stop()
-        self._hide_list_timer.stop()
         self.window_list.hide()
 
     def _on_list_focus(self, window_id: str) -> None:
@@ -788,7 +789,8 @@ class FloatController(QObject):
     # ---------- 菜单 ----------
     def _build_menu(self) -> QMenu:
         menu = QMenu()
-        menu.addAction("展开 / 收起应用", self.toggle_panel)
+        menu.addAction("展开 / 收起应用列表", self.toggle_panel)
+        menu.addAction("已投屏窗口…", self.toggle_window_list)
         menu.addAction("重新读取应用列表", self.reload_requested.emit)
         menu.addSeparator()
         menu.addAction("显示主窗口", self.main_window_requested.emit)
@@ -799,7 +801,9 @@ class FloatController(QObject):
         menu.addAction("退出 Scrcpy Studio", self.quit_requested.emit)
         return menu
 
-    def _show_ball_menu(self, pos: QPoint) -> None:
+    def _show_more_menu(self, *_args) -> None:
+        """列表底部的「⋯ 更多操作」：原来的右键菜单搬到这里。"""
+        pos = self.window_list.mapToGlobal(self.window_list.rect().bottomLeft())
         self._build_menu().exec(pos)
 
     def _show_panel_menu(self, pos: QPoint) -> None:

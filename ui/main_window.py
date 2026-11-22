@@ -28,6 +28,7 @@ from .dialogs import WirelessDialog
 from .floatball import FloatController
 from .inputpanel import InputPanel
 from .mirrorbar import MirrorBar
+from .mirrorcontrol import MirrorControl
 from .panels import AppPanel, ConsolePanel, DevicePanel
 from .settings_dialog import SettingsDialog
 from .usbdialog import UsbDialog
@@ -40,6 +41,8 @@ class MirrorWindow:
     package: str
     serial: str
     proc: QProcess
+    key: str = ""                       # 配置键：包名，整屏用 "__screen__"
+    last_geometry: dict | None = None  # 最近一次采样到的窗口位置尺寸
 
 
 def _app_icon() -> QIcon:
@@ -89,6 +92,10 @@ class MainWindow(QMainWindow):
         self.system_cache: dict[str, set[str]] = {}
         self.current_serial: str = ""
         self.processes: dict[str, MirrorWindow] = {}
+        self.controls: dict[str, MirrorControl] = {}
+        self._geometry_timer = QTimer(self)
+        self._geometry_timer.setInterval(2000)
+        self._geometry_timer.timeout.connect(self._sample_geometry)
         self._float_mode = False
         self._had_online = False
 
@@ -301,7 +308,7 @@ class MainWindow(QMainWindow):
     def _about(self) -> None:
         QMessageBox.about(
             self, "关于 Scrcpy Studio",
-            "Scrcpy Studio 0.5.0\n\n"
+            "Scrcpy Studio 0.6.0\n\n"
             "macOS 桌面投屏工作台：USB / 无线设备管理、真实应用图标、"
             "应用分类、设备文本输入、多窗口单应用投屏与悬浮球模式。\n\n"
             "基于 scrcpy 5.x 与 adb。",
@@ -367,6 +374,8 @@ class MainWindow(QMainWindow):
         self.device_panel.set_devices(self.devices, self.current_serial)
         self.app_panel.refresh()
         self.float_controller.apply_theme()
+        for control in self.controls.values():
+            control.set_theme()
 
     # ---------- 信号 ----------
     def _wire(self) -> None:
@@ -472,6 +481,7 @@ class MainWindow(QMainWindow):
             self.state.usb_port = dialog.usb_port_value()
             self.state.auto_float_on_connect = dialog.auto_float_value()
             self.state.auto_float_on_mirror = dialog.auto_float_mirror_value()
+            self.state.remember_window_geometry = dialog.remember_geometry_value()
             self.state.adb_path = dialog.adb_path_value()
             self.state.scrcpy_path = dialog.scrcpy_path_value()
             paths.set_overrides(self.state.adb_path, self.state.scrcpy_path)
@@ -998,8 +1008,16 @@ class MainWindow(QMainWindow):
 
         self.state.mirror = cfg
         self.persist()
-        args = build_args(cfg, serial, self.state.scrcpy_path or None)
+        config_key = package or "__screen__"
+        geometry = (self.state.window_geometry.get(config_key)
+                    if self.state.remember_window_geometry else None)
+        args = build_args(cfg, serial, self.state.scrcpy_path or None, geometry)
         self.console.log("$ " + shlex.join(args))
+        if geometry and geometry.get("x") is not None:
+            self.console.log(
+                f"[窗口] 恢复 {config_key} 上次位置 "
+                f"{geometry.get('x')},{geometry.get('y')}"
+            )
 
         window_id = uuid.uuid4().hex[:8]
         proc = QProcess(self)
@@ -1017,8 +1035,12 @@ class MainWindow(QMainWindow):
             lambda err: self.console.log(f"[scrcpy 启动失败] {err}")
         )
         proc.start(args[0], args[1:])
-        self.processes[window_id] = MirrorWindow(window_id, label, package or "",
-                                                  serial, proc)
+        self.processes[window_id] = MirrorWindow(
+            window_id, label, package or "", serial, proc, key=config_key
+        )
+        self._create_control(window_id, label, serial, geometry)
+        if not self._geometry_timer.isActive():
+            self._geometry_timer.start()
         self.console.log(f"投屏窗口 {window_id} → {label}（可继续打开其他应用）")
         self._refresh_mirror_ui()
         if self.state.auto_float_on_mirror:
@@ -1042,12 +1064,17 @@ class MainWindow(QMainWindow):
         label = window.label
         # 点击悬浮球/列表时先确保本 App 是前台，macOS 才允许把别的进程激活
         self.float_controller.ball.activateWindow()
-        if pid and nativewindow.focus_process(pid):
+        # 窗口不在屏幕列表里通常意味着已最小化，需要走能取消 AXMinimized 的路径
+        on_screen = bool(pid and nativewindow.window_bounds(pid))
+        if pid and on_screen and nativewindow.focus_process(pid):
             self.console.log(f"[置前] {label}（pid {pid}）")
             self.input_panel.set_status(f"已切换到 {label}", ok=True)
             return
 
-        self.console.log(f"[去重] {label} 已在投屏中（pid {pid}），尝试备用方式置前…")
+        if not on_screen:
+            self.console.log(f"[置前] {label} 的窗口当前不在屏幕上，尝试恢复显示…")
+        else:
+            self.console.log(f"[去重] {label} 已在投屏中（pid {pid}），尝试备用方式置前…")
 
         def done(ok: bool) -> None:
             if ok:
@@ -1065,6 +1092,105 @@ class MainWindow(QMainWindow):
                       lambda _m: done(False))
         else:
             done(False)
+
+    # ---------- 每个投屏窗口的控制条 ----------
+    def _create_control(self, window_id: str, label: str, serial: str,
+                        geometry: dict | None) -> None:
+        control = MirrorControl(window_id, label, serial)
+        control.key_requested.connect(self._control_key)
+        control.text_requested.connect(self._control_text)
+        control.copy_requested.connect(self._control_copy)
+        control.close_requested.connect(self.stop_mirror)
+        control.focus_requested.connect(self.focus_mirror)
+        control.moved.connect(self._control_moved)
+
+        pos: tuple[int, int] | None = None
+        if geometry and geometry.get("control_x") is not None:
+            pos = (int(geometry["control_x"]), int(geometry.get("control_y", 80)))
+        if pos is None:
+            screen = QGuiApplication.primaryScreen()
+            area = screen.availableGeometry() if screen else None
+            pos = (area.left() + 40,
+                   area.top() + 28 + 66 * (len(self.controls) % 5)) if area else (80, 80)
+        control.move(*pos)
+        control.show()
+        control.raise_()
+        QTimer.singleShot(
+            0, lambda: nativewindow.pin(control, nativewindow.CONTROL_LEVEL)
+        )
+        self.controls[window_id] = control
+
+    def _control_key(self, serial: str, name: str) -> None:
+        run_async(
+            textinput.send_keyevent,
+            lambda out: self.console.log(f"[控制] {name} → {out.strip() or '已发送'}"),
+            lambda msg: self.console.log(f"[控制失败] {name}：{msg}"),
+            serial, name,
+        )
+
+    def _control_text(self, serial: str, text: str, enter: bool) -> None:
+        control = self.sender() if isinstance(self.sender(), MirrorControl) else None
+
+        def done(result) -> None:
+            channel = "ADBKeyBoard" if result.channel == "adbkeyboard" else "input text"
+            self.console.log(f"[控制] 文本已推送 · {channel}")
+            if control:
+                control.set_status("已发送 ✓")
+
+        def fail(message: str) -> None:
+            self.console.log(f"[控制失败] 文本推送：{message}")
+            if control:
+                control.set_status("失败 · 可点复制后 ⌘V")
+
+        run_async(
+            lambda: textinput.send(serial, text, self.state.input_mode, enter),
+            done, fail,
+        )
+
+    def _control_copy(self, text: str) -> None:
+        QApplication.clipboard().setText(text)
+        self.console.log(f"已复制 {len(text)} 个字符 · 到投屏窗口按 ⌘V 粘贴")
+        control = self.sender() if isinstance(self.sender(), MirrorControl) else None
+        if control:
+            control.set_status("已复制 · 窗口内 ⌘V")
+
+    def _control_moved(self, window_id: str, x: int, y: int) -> None:
+        window = self.processes.get(window_id)
+        if not window or not self.state.remember_window_geometry:
+            return
+        entry = self.state.window_geometry.setdefault(window.key, {})
+        entry["control_x"], entry["control_y"] = int(x), int(y)
+        self.persist()
+
+    # ---------- 记住每个应用的窗口位置 ----------
+    def _sample_geometry(self) -> None:
+        if not self.processes:
+            self._geometry_timer.stop()
+            return
+        for window in self.processes.values():
+            pid = int(window.proc.processId() or 0)
+            if not pid or window.proc.state() == QProcess.NotRunning:
+                continue
+            bounds = nativewindow.window_bounds(pid)
+            if bounds:
+                window.last_geometry = bounds
+
+    def _save_window_geometry(self, window: MirrorWindow) -> None:
+        if not self.state.remember_window_geometry:
+            return
+        control = self.controls.get(window.id)
+        entry = dict(window.last_geometry or {})
+        if control is not None:
+            entry["control_x"], entry["control_y"] = control.x(), control.y()
+        if not entry:
+            return
+        self.state.window_geometry[window.key] = entry
+        self.persist()
+        if window.last_geometry:
+            self.console.log(
+                f"[窗口] 已记住 {window.key} 的位置 "
+                f"{entry['x']},{entry['y']} {entry['width']}×{entry['height']}"
+            )
 
     def _launch_on_device(self, serial: str, package: str) -> None:
         """旧版 scrcpy 的降级路径：在手机上把应用拉到前台，再整屏投屏。"""
@@ -1106,8 +1232,16 @@ class MainWindow(QMainWindow):
 
     def _on_finished(self, window_id: str) -> None:
         window = self.processes.pop(window_id, None)
+        control = self.controls.get(window_id)
         if window:
             self.console.log(f"投屏窗口已退出：{window.label}")
+            self._save_window_geometry(window)
+        if control is not None:
+            self.controls.pop(window_id, None)
+            control.close()
+            control.deleteLater()
+        if not self.processes:
+            self._geometry_timer.stop()
         self._refresh_mirror_ui()
 
     def _refresh_mirror_ui(self) -> None:
@@ -1130,10 +1264,15 @@ class MainWindow(QMainWindow):
         self._info_token += 1
         self._info_timer.stop()
         self.timer.stop()
+        self._geometry_timer.stop()
         self.watcher.stop()
         if self._float_mode:
             self.state.float_ball_pos = list(self.float_controller.ball_pos())
         self.float_controller.hide()
+        for window in self.processes.values():
+            self._save_window_geometry(window)
+        for control in self.controls.values():
+            control.close()
         self.persist()
         for window in self.processes.values():
             if window.proc.state() != QProcess.NotRunning:

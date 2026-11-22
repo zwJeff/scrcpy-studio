@@ -117,6 +117,10 @@ class SettingsDialog(QDialog):
         self.auto_float_mirror.setChecked(state.auto_float_on_mirror)
         form.addRow("", self.auto_float_mirror)
 
+        self.remember_geometry = QCheckBox("记住每个应用的投屏窗口位置与尺寸")
+        self.remember_geometry.setChecked(state.remember_window_geometry)
+        form.addRow("", self.remember_geometry)
+
         self.usb_port = QSpinBox()
         self.usb_port.setRange(1, 65535)
         self.usb_port.setValue(state.usb_port)
@@ -225,6 +229,7 @@ class SettingsDialog(QDialog):
         self.auto_mirror.setChecked(False)
         self.auto_float.setChecked(False)
         self.auto_float_mirror.setChecked(True)
+        self.remember_geometry.setChecked(True)
         self.usb_port.setValue(5555)
         self.adb_path.clear()
         self.scrcpy_path.clear()
@@ -252,6 +257,9 @@ class SettingsDialog(QDialog):
 
     def auto_float_mirror_value(self) -> bool:
         return self.auto_float_mirror.isChecked()
+
+    def remember_geometry_value(self) -> bool:
+        return self.remember_geometry.isChecked()
 
     def usb_port_value(self) -> int:
         return self.usb_port.value()
